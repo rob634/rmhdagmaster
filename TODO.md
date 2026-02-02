@@ -1,6 +1,6 @@
 # TODO - rmhdagmaster Implementation Plan
 
-**Last Updated**: 01 FEB 2026
+**Last Updated**: 02 FEB 2026
 **Source**: Consolidated from EPOCH_5.md + rmhgeoapi deep review
 
 ---
@@ -32,8 +32,8 @@ GitHub Push → CI/CD Build → ACR Image → Multiple Azure Web Apps
 | Phase | Status | Description |
 |-------|--------|-------------|
 | 0: Project Setup | ✅ DONE | Repo created, models defined, schema generator built |
-| **0.5: Repository Refactor** | 🚨 **IMMEDIATE** | Async base class, connection pooling, auto-Json |
-| **0.7: Critical Fixes (P0)** | 🚨 **IMMEDIATE** | Event logging, retry logic, stale state bug |
+| **0.5: Repository Refactor** | ✅ DONE | Async base class, connection pooling, auto-Json |
+| **0.7: Critical Fixes (P0)** | ✅ DONE | Event logging, retry logic, stale state bug |
 | 1: Core Engine | 🔄 IN PROGRESS | Database schema, workflow loader, evaluator |
 | 2: Worker Integration | ⏳ TODO | Workers report to orchestrator |
 | 3: Real Workflows | ⏳ TODO | Port raster/vector workflows |
@@ -175,8 +175,8 @@ node_states = await node_repo.get_all_for_job(job_id)  # Snapshot
 
 | Task | Status | File |
 |------|--------|------|
-| Create TimelineService | ⏳ TODO | `services/timeline_service.py` |
-| Add GET /jobs/{id}/timeline | ⏳ TODO | `api/routes.py` |
+| Create TimelineService | ✅ DONE | `services/event_service.py` |
+| Add GET /jobs/{id}/timeline | ✅ DONE | `api/routes.py` |
 
 ### P3.3: Metrics Dashboard
 
