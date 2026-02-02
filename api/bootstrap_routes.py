@@ -5,23 +5,36 @@
 # STATUS: Infrastructure - Database bootstrap endpoints
 # PURPOSE: HTTP endpoints for schema deployment and verification
 # CREATED: 29 JAN 2026
-# UPDATED: 02 FEB 2026 - Refactored to use DatabaseInitializer (repository pattern)
+# UPDATED: 02 FEB 2026 - Added rebuild endpoint, made deploy safe (non-destructive enums)
 # ============================================================================
 """
 Bootstrap API Routes
 
-Provides HTTP endpoints for database schema management:
-- GET /api/v1/bootstrap/status - Check schema status
-- POST /api/v1/bootstrap/deploy - Deploy schema (requires confirmation)
-- GET /api/v1/bootstrap/tables - List tables and row counts
-- GET /api/v1/bootstrap/ddl - Preview DDL statements
+Provides HTTP endpoints for database schema management.
 
-All operations delegate to DatabaseInitializer which uses:
-- AsyncPostgreSQLRepository for database access
-- PydanticToSQL for DDL generation (Pydantic models as single source of truth)
+ENDPOINT SUMMARY:
+-----------------
+| Endpoint              | Behavior                    | Destructive? |
+|-----------------------|-----------------------------|--------------|
+| GET  /status          | Check schema status         | No           |
+| GET  /tables          | List tables and row counts  | No           |
+| GET  /ddl             | Preview DDL statements      | No           |
+| POST /deploy          | Create schema (idempotent)  | No (safe)    |
+| POST /migrate         | Add missing columns         | No (safe)    |
+| POST /rebuild         | DROP CASCADE + recreate     | YES! ⚠️      |
+
+SAFETY MODEL:
+-------------
+- deploy: Uses CREATE IF NOT EXISTS for tables and enums. Safe to run repeatedly.
+- migrate: Uses ADD COLUMN IF NOT EXISTS. Only adds, never drops.
+- rebuild: Requires ALLOW_DESTRUCTIVE_BOOTSTRAP=true AND ?confirm=DESTROY.
+           DELETES ALL DATA. Development only. Remove before UAT/Prod.
+
+All operations use:
+- AsyncPostgreSQLRepository for database access (Azure AD auth)
+- PydanticToSQL for DDL generation (Pydantic models are single source of truth)
 
 These endpoints are intended for operational use, not regular API consumers.
-Consider restricting access in production.
 """
 
 import logging
@@ -320,3 +333,111 @@ async def run_migrations(
     except Exception as e:
         logger.error(f"Migration failed: {e}")
         raise HTTPException(500, f"Migration failed: {e}")
+
+
+@router.post("/rebuild")
+async def rebuild_schema(
+    confirm: str = Query(None, description="Must be 'DESTROY' to execute"),
+):
+    """
+    DESTRUCTIVE: Drop and recreate the entire dagapp schema.
+
+    ⚠️  WARNING: This will DELETE ALL DATA in the dagapp schema!
+
+    This endpoint is for DEVELOPMENT ONLY. It:
+    1. Drops the entire dagapp schema (CASCADE)
+    2. Recreates all tables, enums, indexes from Pydantic models
+
+    Safety requirements:
+    - Environment variable ALLOW_DESTRUCTIVE_BOOTSTRAP must be 'true'
+    - Query parameter confirm must be 'DESTROY'
+
+    For production deployments, use:
+    - POST /deploy for initial schema creation (idempotent, safe)
+    - POST /migrate for adding missing columns (non-destructive)
+
+    This endpoint should be REMOVED before UAT/Production deployment.
+    """
+    import os
+
+    # Safety check 1: Environment variable
+    if os.environ.get("ALLOW_DESTRUCTIVE_BOOTSTRAP", "").lower() != "true":
+        return JSONResponse(
+            status_code=403,
+            content={
+                "error": "Destructive bootstrap disabled",
+                "message": "Set ALLOW_DESTRUCTIVE_BOOTSTRAP=true to enable",
+                "hint": "This endpoint is for development only"
+            }
+        )
+
+    # Safety check 2: Confirmation parameter
+    if confirm != "DESTROY":
+        return JSONResponse(
+            status_code=400,
+            content={
+                "error": "Confirmation required",
+                "message": "Add ?confirm=DESTROY to execute (this will DELETE ALL DATA)",
+                "example": "POST /api/v1/bootstrap/rebuild?confirm=DESTROY",
+                "warning": "This will drop the entire dagapp schema and all data!"
+            }
+        )
+
+    try:
+        from infrastructure.postgresql import AsyncPostgreSQLRepository
+        from core.schema.sql_generator import PydanticToSQL
+
+        repo = AsyncPostgreSQLRepository(schema_name="dagapp")
+
+        # Use destructive mode for full rebuild
+        generator = PydanticToSQL(schema_name="dagapp", destructive=True)
+
+        results = {
+            "drop_schema": None,
+            "create_schema": None,
+            "statements_executed": 0,
+            "errors": []
+        }
+
+        async with repo.get_connection() as conn:
+            # Step 1: Drop schema CASCADE
+            try:
+                drop_stmt = generator.generate_drop_schema()
+                await conn.execute(drop_stmt.as_string(None))
+                results["drop_schema"] = "success"
+                logger.warning("REBUILD: Dropped dagapp schema (CASCADE)")
+            except Exception as e:
+                results["drop_schema"] = f"failed: {e}"
+                results["errors"].append(f"Drop schema failed: {e}")
+                logger.error(f"REBUILD: Drop schema failed: {e}")
+
+            # Step 2: Create schema and all objects
+            try:
+                statements = generator.generate_all()
+                executed = 0
+                for stmt in statements:
+                    try:
+                        await conn.execute(stmt.as_string(None))
+                        executed += 1
+                    except Exception as e:
+                        results["errors"].append(f"Statement failed: {e}")
+                        logger.error(f"REBUILD: Statement failed: {e}")
+
+                results["create_schema"] = "success"
+                results["statements_executed"] = executed
+                logger.info(f"REBUILD: Executed {executed} DDL statements")
+            except Exception as e:
+                results["create_schema"] = f"failed: {e}"
+                results["errors"].append(f"Create schema failed: {e}")
+                logger.error(f"REBUILD: Create schema failed: {e}")
+
+        success = results["drop_schema"] == "success" and results["create_schema"] == "success"
+
+        return JSONResponse(
+            status_code=200 if success else 500,
+            content={
+                "status": "rebuilt" if success else "failed",
+                "warning": "ALL DATA WAS DELETED" if success else "Rebuild may be incomplete",
+                **results
+            }
+        )

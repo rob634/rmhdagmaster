@@ -4,7 +4,7 @@
 # EPOCH: 5 - DAG ORCHESTRATION
 # STATUS: Core - DDL generation from Pydantic models
 # PURPOSE: Generate PostgreSQL CREATE statements from Pydantic models
-# LAST_REVIEWED: 28 JAN 2026
+# LAST_REVIEWED: 02 FEB 2026
 # EXPORTS: PydanticToSQL
 # DEPENDENCIES: pydantic, psycopg
 # ============================================================================
@@ -66,14 +66,17 @@ class PydanticToSQL:
         List: "JSONB",
     }
 
-    def __init__(self, schema_name: str = "app"):
+    def __init__(self, schema_name: str = "app", destructive: bool = False):
         """
         Initialize the generator.
 
         Args:
             schema_name: Default PostgreSQL schema name
+            destructive: If True, use DROP+CREATE for enums (data loss risk).
+                        If False (default), use CREATE IF NOT EXISTS (safe).
         """
         self.schema_name = schema_name
+        self.destructive = destructive
         self.enums: Dict[str, Type[Enum]] = {}
 
     # =========================================================================
@@ -174,23 +177,39 @@ class PydanticToSQL:
         """
         Generate PostgreSQL ENUM type DDL.
 
-        Returns DROP + CREATE for idempotency.
+        Behavior depends on self.destructive:
+        - destructive=True: DROP CASCADE + CREATE (destroys dependent columns!)
+        - destructive=False: CREATE with DO block to skip if exists (safe)
         """
         values_list = [member.value for member in enum_class]
+        values_sql = sql.SQL(', ').join(sql.Literal(v) for v in values_list)
 
-        statements = [
-            sql.SQL("DROP TYPE IF EXISTS {}.{} CASCADE").format(
-                sql.Identifier(schema),
-                sql.Identifier(enum_name)
-            ),
-            sql.SQL("CREATE TYPE {}.{} AS ENUM ({})").format(
-                sql.Identifier(schema),
-                sql.Identifier(enum_name),
-                sql.SQL(', ').join(sql.Literal(v) for v in values_list)
-            )
-        ]
-
-        return statements
+        if self.destructive:
+            # DESTRUCTIVE: Drop and recreate (use only for development rebuild)
+            return [
+                sql.SQL("DROP TYPE IF EXISTS {}.{} CASCADE").format(
+                    sql.Identifier(schema),
+                    sql.Identifier(enum_name)
+                ),
+                sql.SQL("CREATE TYPE {}.{} AS ENUM ({})").format(
+                    sql.Identifier(schema),
+                    sql.Identifier(enum_name),
+                    values_sql
+                )
+            ]
+        else:
+            # SAFE: Only create if not exists (PostgreSQL 9.1+ DO block)
+            # This avoids dropping columns that depend on the enum
+            values_str = ', '.join(f"'{v}'" for v in values_list)
+            do_block = f"""
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = '{enum_name}' AND typnamespace = (SELECT oid FROM pg_namespace WHERE nspname = '{schema}')) THEN
+        CREATE TYPE "{schema}"."{enum_name}" AS ENUM ({values_str});
+    END IF;
+END$$
+"""
+            return [sql.SQL(do_block)]
 
     # =========================================================================
     # TABLE GENERATION
@@ -385,6 +404,17 @@ class PydanticToSQL:
     # =========================================================================
     # COMPLETE SCHEMA GENERATION
     # =========================================================================
+
+    def generate_drop_schema(self) -> sql.Composed:
+        """
+        Generate DROP SCHEMA CASCADE statement.
+
+        WARNING: This destroys ALL data in the schema!
+        Only use for development rebuild.
+        """
+        return sql.SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(
+            sql.Identifier(self.schema_name)
+        )
 
     def generate_all(self) -> List[sql.Composed]:
         """

@@ -162,6 +162,66 @@ DBAs review and execute the migration script manually.
 
 ---
 
+## Bootstrap API (Schema Management)
+
+The `/api/v1/bootstrap/*` endpoints manage database schema lifecycle.
+
+### Endpoint Summary
+
+| Endpoint              | Behavior                    | Destructive? | Use Case |
+|-----------------------|-----------------------------|--------------|----------|
+| `GET  /status`        | Check schema status         | No           | Monitoring |
+| `GET  /tables`        | List tables and row counts  | No           | Monitoring |
+| `GET  /ddl`           | Preview DDL statements      | No           | Review |
+| `POST /deploy`        | Create schema (idempotent)  | No           | Initial setup |
+| `POST /migrate`       | Add missing columns         | No           | Schema updates |
+| `POST /rebuild`       | DROP CASCADE + recreate     | **YES** ⚠️   | Dev only |
+
+### Safety Model
+
+```
+deploy  → CREATE IF NOT EXISTS  → Safe, idempotent, run anytime
+migrate → ADD COLUMN IF NOT EXISTS → Safe, only adds columns
+rebuild → DROP SCHEMA CASCADE   → DESTROYS ALL DATA (dev only)
+```
+
+### Development Workflow
+
+When you change a Pydantic model and need a fresh schema:
+
+```bash
+# Option 1: Full rebuild (destroys data)
+curl -X POST "https://host/api/v1/bootstrap/rebuild?confirm=DESTROY"
+# Requires: ALLOW_DESTRUCTIVE_BOOTSTRAP=true in environment
+
+# Option 2: Add new columns only (preserves data)
+curl -X POST "https://host/api/v1/bootstrap/migrate?confirm=yes"
+```
+
+### Production Workflow
+
+1. Use `GET /ddl` to preview statements
+2. Use `POST /deploy?dry_run=true` to test
+3. Use `POST /deploy?confirm=yes` for initial deployment
+4. Use `POST /migrate?confirm=yes` for adding new columns
+
+**IMPORTANT**: The `/rebuild` endpoint must be REMOVED before UAT/Production.
+Search for `ALLOW_DESTRUCTIVE_BOOTSTRAP` to find and remove it.
+
+### PydanticToSQL Modes
+
+```python
+# Safe mode (default) - for deploy
+generator = PydanticToSQL(schema_name="dagapp")
+# Uses CREATE TYPE IF NOT EXISTS for enums
+
+# Destructive mode - for rebuild
+generator = PydanticToSQL(schema_name="dagapp", destructive=True)
+# Uses DROP TYPE CASCADE for enums (destroys dependent columns!)
+```
+
+---
+
 ## Conventions
 
 ### File Header Template
