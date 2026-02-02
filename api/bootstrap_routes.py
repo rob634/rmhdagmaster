@@ -441,3 +441,7 @@ async def rebuild_schema(
                 **results
             }
         )
+
+    except Exception as e:
+        logger.error(f"REBUILD: Unexpected error: {e}")
+        raise HTTPException(500, f"Rebuild failed: {e}")
