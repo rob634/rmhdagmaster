@@ -5,6 +5,7 @@
 # STATUS: Infrastructure - Database bootstrap endpoints
 # PURPOSE: HTTP endpoints for schema deployment and verification
 # CREATED: 29 JAN 2026
+# UPDATED: 02 FEB 2026 - Refactored to use DatabaseInitializer (repository pattern)
 # ============================================================================
 """
 Bootstrap API Routes
@@ -13,6 +14,11 @@ Provides HTTP endpoints for database schema management:
 - GET /api/v1/bootstrap/status - Check schema status
 - POST /api/v1/bootstrap/deploy - Deploy schema (requires confirmation)
 - GET /api/v1/bootstrap/tables - List tables and row counts
+- GET /api/v1/bootstrap/ddl - Preview DDL statements
+
+All operations delegate to DatabaseInitializer which uses:
+- AsyncPostgreSQLRepository for database access
+- PydanticToSQL for DDL generation (Pydantic models as single source of truth)
 
 These endpoints are intended for operational use, not regular API consumers.
 Consider restricting access in production.
@@ -34,64 +40,21 @@ async def get_bootstrap_status():
     """
     Check database schema status.
 
-    Returns schema existence, tables, and enum types.
-    Uses async pool with Azure AD authentication.
+    Uses DatabaseInitializer.verify_installation_async() which
+    delegates to AsyncPostgreSQLRepository for database access.
+
+    Returns:
+        Schema existence, tables, and enum types
     """
     try:
-        from datetime import datetime, timezone
-        from repositories.database import get_pool
-        from psycopg.rows import dict_row
+        from infrastructure import DatabaseInitializer
 
-        pool = await get_pool()
-        result = {
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "schema": "dagapp",
-            "tables": {},
-        }
-
-        async with pool.connection() as conn:
-            conn.row_factory = dict_row
-
-            # Check schema exists
-            row = await conn.execute("""
-                SELECT EXISTS(
-                    SELECT 1 FROM pg_namespace WHERE nspname = 'dagapp'
-                ) as exists
-            """)
-            schema_row = await row.fetchone()
-            result["schema_exists"] = schema_row["exists"]
-
-            if result["schema_exists"]:
-                # Get table info
-                rows = await conn.execute("""
-                    SELECT
-                        t.table_name,
-                        (SELECT COUNT(*) FROM information_schema.columns c
-                         WHERE c.table_schema = t.table_schema
-                         AND c.table_name = t.table_name) as column_count
-                    FROM information_schema.tables t
-                    WHERE t.table_schema = 'dagapp'
-                    ORDER BY t.table_name
-                """)
-                for row in await rows.fetchall():
-                    result["tables"][row["table_name"]] = {
-                        "columns": row["column_count"]
-                    }
-
-                # Get enum types
-                rows = await conn.execute("""
-                    SELECT typname
-                    FROM pg_type t
-                    JOIN pg_namespace n ON t.typnamespace = n.oid
-                    WHERE n.nspname = 'dagapp'
-                    AND t.typtype = 'e'
-                    ORDER BY typname
-                """)
-                result["enum_types"] = [row["typname"] for row in await rows.fetchall()]
+        initializer = DatabaseInitializer()
+        status = await initializer.verify_installation_async()
 
         return JSONResponse(content={
-            "status": "ok" if result.get("schema_exists") else "not_initialized",
-            **result
+            "status": "ok" if status.get("schema_exists") else "not_initialized",
+            **status
         })
 
     except Exception as e:
@@ -105,10 +68,11 @@ async def deploy_schema(
     dry_run: bool = Query(False, description="Preview SQL without executing"),
 ):
     """
-    Deploy dagapp schema to database using PydanticToSQL generator.
+    Deploy dagapp schema to database.
 
-    Generates DDL from Pydantic models (single source of truth) and executes
-    via the async connection pool with proper Azure AD authentication.
+    Uses DatabaseInitializer.initialize_all_async() which:
+    - Generates DDL from Pydantic models via PydanticToSQL
+    - Executes via AsyncPostgreSQLRepository
 
     Operations are idempotent (safe to run multiple times).
 
@@ -117,7 +81,7 @@ async def deploy_schema(
         dry_run: If True, preview SQL statements without executing
 
     Returns:
-        Deployment result with executed statements
+        Deployment result with step details
     """
     if not dry_run and confirm != "yes":
         return JSONResponse(
@@ -130,60 +94,14 @@ async def deploy_schema(
         )
 
     try:
-        from core.schema.sql_generator import PydanticToSQL
-        from repositories.database import get_pool
+        from infrastructure import DatabaseInitializer
 
-        generator = PydanticToSQL(schema_name="dagapp")
-        statements = generator.generate_all()
+        initializer = DatabaseInitializer()
+        result = await initializer.initialize_all_async(dry_run=dry_run)
 
-        logger.info(f"Generated {len(statements)} DDL statements from Pydantic models")
-
-        if dry_run:
-            # Return preview of statements
-            ddl_preview = []
-            for stmt in statements:
-                try:
-                    ddl_preview.append(stmt.as_string(None))
-                except Exception:
-                    ddl_preview.append(str(stmt))
-
-            return JSONResponse(content={
-                "status": "dry_run",
-                "message": f"Would execute {len(statements)} DDL statements",
-                "statement_count": len(statements),
-                "statements": ddl_preview,
-            })
-
-        # Execute via async pool
-        pool = await get_pool()
-        executed = 0
-        skipped = 0
-        errors = []
-
-        async with pool.connection() as conn:
-            for stmt in statements:
-                try:
-                    await conn.execute(stmt)
-                    executed += 1
-                except Exception as e:
-                    # Log but continue - IF NOT EXISTS handles most cases
-                    error_msg = str(e)
-                    if "already exists" in error_msg.lower():
-                        skipped += 1
-                    else:
-                        errors.append(error_msg)
-                        logger.warning(f"DDL statement skipped: {e}")
-
-        success = len(errors) == 0
         return JSONResponse(
-            status_code=200 if success else 207,  # 207 = partial success
-            content={
-                "status": "success" if success else "partial",
-                "message": f"Executed {executed} statements, {skipped} skipped",
-                "executed": executed,
-                "skipped": skipped,
-                "errors": errors if errors else None,
-            }
+            status_code=200 if result.success else 500,
+            content=result.to_dict()
         )
 
     except Exception as e:
@@ -196,31 +114,16 @@ async def get_table_counts():
     """
     Get row counts for all dagapp tables.
 
-    Uses async pool with Azure AD authentication.
+    Uses DatabaseInitializer.get_table_counts_async() which
+    delegates to AsyncPostgreSQLRepository.
+
     Useful for monitoring and debugging.
     """
     try:
-        from repositories.database import get_pool
-        from psycopg.rows import dict_row
-        from psycopg import sql
+        from infrastructure import DatabaseInitializer
 
-        pool = await get_pool()
-        counts = {}
-        tables = ["dag_jobs", "dag_node_states", "dag_task_results", "dag_job_events"]
-
-        async with pool.connection() as conn:
-            conn.row_factory = dict_row
-            for table in tables:
-                try:
-                    result = await conn.execute(
-                        sql.SQL("SELECT COUNT(*) as count FROM dagapp.{}").format(
-                            sql.Identifier(table)
-                        )
-                    )
-                    row = await result.fetchone()
-                    counts[table] = row["count"]
-                except Exception:
-                    counts[table] = -1  # Table doesn't exist
+        initializer = DatabaseInitializer()
+        counts = await initializer.get_table_counts_async()
 
         return JSONResponse(content={
             "schema": "dagapp",
@@ -238,8 +141,10 @@ async def get_ddl_preview():
     """
     Preview DDL statements that would be executed.
 
-    Returns the SQL statements generated from Pydantic models.
-    Useful for review before deployment.
+    Returns the SQL statements generated from Pydantic models
+    via PydanticToSQL.generate_all().
+
+    Pydantic models are the single source of truth for schema.
     """
     try:
         from core.schema.sql_generator import PydanticToSQL
@@ -251,7 +156,6 @@ async def get_ddl_preview():
         ddl_strings = []
         for stmt in statements:
             try:
-                # Try to get string representation
                 ddl_strings.append(stmt.as_string(None))
             except Exception:
                 ddl_strings.append(str(stmt))
@@ -259,6 +163,7 @@ async def get_ddl_preview():
         return JSONResponse(content={
             "schema": "dagapp",
             "statement_count": len(statements),
+            "source": "PydanticToSQL.generate_all() - Pydantic models are the source of truth",
             "statements": ddl_strings,
         })
 
@@ -278,6 +183,8 @@ async def run_migrations(
     missing from database tables, and adds them with appropriate defaults.
 
     IMPORTANT: This does not drop columns - only adds missing ones.
+
+    For full schema deployment (including new tables), use POST /deploy.
     """
     if confirm != "yes":
         return JSONResponse(
@@ -290,15 +197,16 @@ async def run_migrations(
         )
 
     try:
-        from repositories.database import get_pool
+        from infrastructure.postgresql import AsyncPostgreSQLRepository
 
-        pool = await get_pool()
+        repo = AsyncPostgreSQLRepository(schema_name="dagapp")
 
         migrations_applied = []
         migrations_failed = []
 
-        async with pool.connection() as conn:
+        async with repo.get_connection() as conn:
             # Define missing column migrations
+            # These are columns that may have been added to models after initial deployment
             migrations = [
                 # dag_task_results.processed
                 {

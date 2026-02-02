@@ -3,50 +3,50 @@
 # ============================================================================
 # EPOCH: 5 - DAG ORCHESTRATION
 # STATUS: Infrastructure - Database initialization orchestrator
-# PURPOSE: Bootstrap dagapp schema from Pydantic models
+# PURPOSE: Bootstrap dagapp schema from Pydantic models using repository pattern
 # CREATED: 29 JAN 2026
+# UPDATED: 02 FEB 2026 - Refactored to use repository pattern (rmhgeoapi style)
 # ============================================================================
 """
 DatabaseInitializer - Infrastructure as Code for DAG Orchestrator.
 
 Provides a standardized workflow for initializing the dagapp schema:
 1. Schema creation (dagapp)
-2. Enum type creation (job_status, node_status, task_status)
-3. Table creation from Pydantic models
+2. Enum type creation (job_status, node_status, task_status, event_type, event_status)
+3. Table creation from Pydantic models (Job, NodeState, TaskResult, JobEvent)
 4. Index creation
 5. Trigger creation (updated_at)
 
-All operations are idempotent (safe to run multiple times).
-Uses IF NOT EXISTS and CASCADE patterns.
+All operations use the repository pattern for database access:
+- Sync operations use PostgreSQLRepository
+- Async operations use AsyncPostgreSQLRepository
+
+Pydantic models are the SINGLE SOURCE OF TRUTH for schema.
+DDL is generated via PydanticToSQL.generate_all().
 
 Usage:
+    # Sync (for scripts/CLI)
     from infrastructure import DatabaseInitializer
 
-    # Initialize with connection string from environment
     initializer = DatabaseInitializer()
     result = initializer.initialize_all()
+
+    # Async (for API endpoints)
+    initializer = DatabaseInitializer()
+    result = await initializer.initialize_all_async()
 
     # Dry run (show SQL without executing)
     result = initializer.initialize_all(dry_run=True)
 
     # Verify installation
     status = initializer.verify_installation()
-
-Environment Variables:
-    DATABASE_URL: PostgreSQL connection string
-    POSTGRES_HOST, POSTGRES_DB, POSTGRES_USER, POSTGRES_PASSWORD: Individual parts
 """
 
-import os
 import logging
 import traceback
 from typing import Dict, Any, List, Optional
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-
-import psycopg
-from psycopg import sql
-from psycopg.rows import dict_row
 
 logger = logging.getLogger(__name__)
 
@@ -120,81 +120,72 @@ class DatabaseInitializer:
     5. Trigger creation
 
     All operations are idempotent (safe to run multiple times).
+    Uses repository pattern for database access.
     """
 
     SCHEMA_NAME = "dagapp"
+    EXPECTED_TABLES = ["dag_jobs", "dag_node_states", "dag_task_results", "dag_job_events"]
 
-    def __init__(
-        self,
-        connection_string: Optional[str] = None,
-        host: Optional[str] = None,
-        database: Optional[str] = None,
-        user: Optional[str] = None,
-        password: Optional[str] = None,
-        port: int = 5432,
-        sslmode: str = "require",
-    ):
+    def __init__(self):
         """
         Initialize the database initializer.
 
-        Args:
-            connection_string: Full PostgreSQL connection string (overrides other params)
-            host: Database host
-            database: Database name
-            user: Database user
-            password: Database password
-            port: Database port (default 5432)
-            sslmode: SSL mode (default 'require' for Azure)
-
-        If no parameters provided, reads from environment:
-            DATABASE_URL or POSTGRES_* variables
+        Uses environment variables for database configuration:
+        - POSTGRES_HOST, POSTGRES_DB for connection info
+        - USE_MANAGED_IDENTITY for Azure AD auth
         """
-        self.connection_string = connection_string or self._build_connection_string(
-            host, database, user, password, port, sslmode
-        )
+        import os
 
-        # Parse host/database for logging
-        self.host = host or os.environ.get("POSTGRES_HOST", "localhost")
-        self.database = database or os.environ.get("POSTGRES_DB", "postgres")
+        self.host = os.environ.get("POSTGRES_HOST", "localhost")
+        self.database = os.environ.get("POSTGRES_DB", "postgres")
+
+        # Repositories are created lazily
+        self._sync_repo = None
+        self._async_repo = None
 
         logger.info(f"DatabaseInitializer created for {self.host}/{self.database}")
 
-    def _build_connection_string(
-        self,
-        host: Optional[str],
-        database: Optional[str],
-        user: Optional[str],
-        password: Optional[str],
-        port: int,
-        sslmode: str,
-    ) -> str:
-        """Build connection string from parameters or environment."""
-        # Check for DATABASE_URL first
-        database_url = os.environ.get("DATABASE_URL")
-        if database_url:
-            return database_url
+    @property
+    def sync_repo(self):
+        """Get sync PostgreSQL repository (lazy initialization)."""
+        if self._sync_repo is None:
+            from infrastructure.postgresql import PostgreSQLRepository
+            self._sync_repo = PostgreSQLRepository(schema_name=self.SCHEMA_NAME)
+        return self._sync_repo
 
-        # Build from individual parameters or environment
-        h = host or os.environ.get("POSTGRES_HOST", "localhost")
-        d = database or os.environ.get("POSTGRES_DB", "postgres")
-        u = user or os.environ.get("POSTGRES_USER", "postgres")
-        p = password or os.environ.get("POSTGRES_PASSWORD", "")
-        pt = port or int(os.environ.get("POSTGRES_PORT", "5432"))
-        ssl = sslmode or os.environ.get("POSTGRES_SSLMODE", "require")
-
-        return f"postgresql://{u}:{p}@{h}:{pt}/{d}?sslmode={ssl}"
-
-    def _get_connection(self):
-        """Get a database connection."""
-        return psycopg.connect(self.connection_string, row_factory=dict_row)
+    @property
+    def async_repo(self):
+        """Get async PostgreSQL repository (lazy initialization)."""
+        if self._async_repo is None:
+            from infrastructure.postgresql import AsyncPostgreSQLRepository
+            self._async_repo = AsyncPostgreSQLRepository(schema_name=self.SCHEMA_NAME)
+        return self._async_repo
 
     # ========================================================================
-    # MAIN ORCHESTRATION
+    # DDL GENERATION (Pydantic is the source of truth)
+    # ========================================================================
+
+    def _generate_ddl_statements(self) -> List:
+        """
+        Generate DDL statements from Pydantic models.
+
+        Returns:
+            List of sql.Composed DDL statements
+        """
+        from core.schema.sql_generator import PydanticToSQL
+
+        generator = PydanticToSQL(schema_name=self.SCHEMA_NAME)
+        return generator.generate_all()
+
+    # ========================================================================
+    # SYNC OPERATIONS (for scripts/CLI)
     # ========================================================================
 
     def initialize_all(self, dry_run: bool = False) -> InitializationResult:
         """
-        Initialize database with dagapp schema.
+        Initialize database with dagapp schema (synchronous).
+
+        Uses PostgreSQLRepository for database operations.
 
         Args:
             dry_run: If True, log SQL but don't execute
@@ -224,7 +215,7 @@ class DatabaseInitializer:
                 result.errors.append(f"Connection failed: {step_result.error}")
                 return result
 
-            # Step 2: Create schema and deploy DDL
+            # Step 2: Deploy schema
             step_result = self._deploy_schema(dry_run=dry_run)
             result.steps.append(step_result)
             if step_result.status == "failed":
@@ -261,28 +252,23 @@ class DatabaseInitializer:
 
         return result
 
-    # ========================================================================
-    # INDIVIDUAL STEPS
-    # ========================================================================
-
     def _test_connection(self) -> StepResult:
-        """Test database connection."""
+        """Test database connection using repository."""
         step = StepResult(name="test_connection", status="pending")
 
         logger.info("Step: Testing database connection...")
 
         try:
-            with self._get_connection() as conn:
-                with conn.cursor() as cur:
-                    cur.execute("SELECT version() as version, current_database() as db")
-                    row = cur.fetchone()
+            result = self.sync_repo.fetch_one(
+                "SELECT version() as version, current_database() as db"
+            )
 
-                    step.status = "success"
-                    step.message = f"Connected to {row['db']}"
-                    step.details = {
-                        "version": row["version"][:50] + "...",
-                        "database": row["db"],
-                    }
+            step.status = "success"
+            step.message = f"Connected to {result['db']}"
+            step.details = {
+                "version": result["version"][:50] + "...",
+                "database": result["db"],
+            }
 
         except Exception as e:
             step.status = "failed"
@@ -300,52 +286,40 @@ class DatabaseInitializer:
         logger.info(f"Step: Deploying {self.SCHEMA_NAME} schema...")
 
         try:
-            from core.schema.sql_generator import PydanticToSQL
-
-            generator = PydanticToSQL(schema_name=self.SCHEMA_NAME)
-            statements = generator.generate_all()
-
-            logger.info(f"   Generated {len(statements)} DDL statements")
+            statements = self._generate_ddl_statements()
+            logger.info(f"   Generated {len(statements)} DDL statements from Pydantic models")
 
             if dry_run:
                 # Log statements without executing
-                for i, stmt in enumerate(statements, 1):
-                    # Try to get string representation
+                for i, stmt in enumerate(statements[:10], 1):
                     try:
-                        stmt_str = stmt.as_string(None)[:80]
-                    except Exception:
                         stmt_str = str(stmt)[:80]
+                    except Exception:
+                        stmt_str = "<complex statement>"
                     logger.info(f"   [{i}] {stmt_str}...")
+
+                if len(statements) > 10:
+                    logger.info(f"   ... and {len(statements) - 10} more statements")
 
                 step.status = "success"
                 step.message = f"[DRY RUN] Would execute {len(statements)} statements"
                 step.details = {"statements_count": len(statements)}
                 return step
 
-            # Execute statements
-            with self._get_connection() as conn:
-                with conn.cursor() as cur:
-                    executed = 0
-                    skipped = 0
+            # Execute via repository
+            exec_result = self.sync_repo.execute_ddl_statements(statements)
 
-                    for stmt in statements:
-                        try:
-                            cur.execute(stmt)
-                            executed += 1
-                        except Exception as e:
-                            # Log but continue (IF NOT EXISTS should handle most)
-                            logger.debug(f"Statement skipped: {e}")
-                            skipped += 1
+            step.status = "success" if exec_result["success"] else "failed"
+            step.message = f"Deployed {exec_result['executed']} statements ({exec_result['skipped']} skipped)"
+            step.details = {
+                "statements_executed": exec_result["executed"],
+                "statements_skipped": exec_result["skipped"],
+                "schema": self.SCHEMA_NAME,
+                "errors": exec_result["errors"] if exec_result["errors"] else None,
+            }
 
-                conn.commit()
-
-                step.status = "success"
-                step.message = f"Deployed {executed} statements ({skipped} skipped)"
-                step.details = {
-                    "statements_executed": executed,
-                    "statements_skipped": skipped,
-                    "schema": self.SCHEMA_NAME,
-                }
+            if exec_result["errors"]:
+                step.error = "; ".join(exec_result["errors"][:3])
 
         except Exception as e:
             step.status = "failed"
@@ -358,42 +332,31 @@ class DatabaseInitializer:
         return step
 
     def _verify_tables(self) -> StepResult:
-        """Verify expected tables exist."""
+        """Verify expected tables exist using repository."""
         step = StepResult(name="verify_tables", status="pending")
 
         logger.info("Step: Verifying tables...")
 
-        expected_tables = ["dag_jobs", "dag_node_states", "dag_task_results", "dag_job_events"]
-
         try:
-            with self._get_connection() as conn:
-                with conn.cursor() as cur:
-                    cur.execute("""
-                        SELECT table_name
-                        FROM information_schema.tables
-                        WHERE table_schema = %s
-                        ORDER BY table_name
-                    """, [self.SCHEMA_NAME])
+            existing = self.sync_repo.get_tables_in_schema(self.SCHEMA_NAME)
 
-                    existing = [row["table_name"] for row in cur.fetchall()]
+            missing = [t for t in self.EXPECTED_TABLES if t not in existing]
+            extra = [t for t in existing if t not in self.EXPECTED_TABLES]
 
-                    missing = [t for t in expected_tables if t not in existing]
-                    extra = [t for t in existing if t not in expected_tables]
+            if missing:
+                step.status = "failed"
+                step.error = f"Missing tables: {missing}"
+                step.message = f"Verification failed: {len(missing)} tables missing"
+            else:
+                step.status = "success"
+                step.message = f"All {len(self.EXPECTED_TABLES)} expected tables exist"
 
-                    if missing:
-                        step.status = "failed"
-                        step.error = f"Missing tables: {missing}"
-                        step.message = f"Verification failed: {len(missing)} tables missing"
-                    else:
-                        step.status = "success"
-                        step.message = f"All {len(expected_tables)} expected tables exist"
-
-                    step.details = {
-                        "expected": expected_tables,
-                        "existing": existing,
-                        "missing": missing,
-                        "extra": extra,
-                    }
+            step.details = {
+                "expected": self.EXPECTED_TABLES,
+                "existing": existing,
+                "missing": missing,
+                "extra": extra,
+            }
 
         except Exception as e:
             step.status = "failed"
@@ -408,12 +371,191 @@ class DatabaseInitializer:
         return step
 
     # ========================================================================
+    # ASYNC OPERATIONS (for API endpoints)
+    # ========================================================================
+
+    async def initialize_all_async(self, dry_run: bool = False) -> InitializationResult:
+        """
+        Initialize database with dagapp schema (asynchronous).
+
+        Uses AsyncPostgreSQLRepository for database operations.
+        Suitable for FastAPI endpoint handlers.
+
+        Args:
+            dry_run: If True, return DDL preview without executing
+
+        Returns:
+            InitializationResult with detailed step results
+        """
+        result = InitializationResult(
+            database_host=self.host,
+            database_name=self.database,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+            success=False
+        )
+
+        logger.info("=" * 70)
+        logger.info("DAG ORCHESTRATOR - DATABASE INITIALIZATION (ASYNC)")
+        logger.info(f"   Target: {self.host}/{self.database}")
+        logger.info(f"   Schema: {self.SCHEMA_NAME}")
+        logger.info(f"   Mode: {'DRY RUN' if dry_run else 'EXECUTE'}")
+        logger.info("=" * 70)
+
+        try:
+            # Step 1: Test connection
+            step_result = await self._test_connection_async()
+            result.steps.append(step_result)
+            if step_result.status == "failed":
+                result.errors.append(f"Connection failed: {step_result.error}")
+                return result
+
+            # Step 2: Deploy schema
+            step_result = await self._deploy_schema_async(dry_run=dry_run)
+            result.steps.append(step_result)
+            if step_result.status == "failed":
+                result.errors.append(f"Schema deployment failed: {step_result.error}")
+
+            # Step 3: Verify installation
+            if not dry_run:
+                step_result = await self._verify_tables_async()
+                result.steps.append(step_result)
+                if step_result.status == "failed":
+                    result.warnings.append(f"Verification issue: {step_result.error}")
+
+            # Determine overall success
+            critical_failures = [
+                s for s in result.steps
+                if s.status == "failed" and s.name != "verify_tables"
+            ]
+            result.success = len(critical_failures) == 0
+
+        except Exception as e:
+            logger.error(f"Initialization failed: {e}")
+            logger.error(traceback.format_exc())
+            result.errors.append(str(e))
+            result.success = False
+
+        # Log summary
+        summary = result.to_dict()["summary"]
+        logger.info("=" * 70)
+        logger.info(f"INITIALIZATION {'COMPLETE' if result.success else 'FAILED'}")
+        logger.info(f"   Steps: {summary['successful']} succeeded, {summary['failed']} failed")
+        logger.info("=" * 70)
+
+        return result
+
+    async def _test_connection_async(self) -> StepResult:
+        """Test database connection using async repository."""
+        step = StepResult(name="test_connection", status="pending")
+
+        logger.info("Step: Testing database connection (async)...")
+
+        try:
+            async with self.async_repo.get_connection() as conn:
+                result = await conn.execute(
+                    "SELECT version() as version, current_database() as db"
+                )
+                row = await result.fetchone()
+
+                step.status = "success"
+                step.message = f"Connected to {row['db']}"
+                step.details = {
+                    "version": row["version"][:50] + "...",
+                    "database": row["db"],
+                }
+
+        except Exception as e:
+            step.status = "failed"
+            step.error = str(e)
+            step.message = f"Connection failed: {e}"
+            logger.error(f"Connection test failed: {e}")
+
+        logger.info(f"   Result: {step.status} - {step.message}")
+        return step
+
+    async def _deploy_schema_async(self, dry_run: bool = False) -> StepResult:
+        """Deploy dagapp schema using async repository."""
+        step = StepResult(name="deploy_schema", status="pending")
+
+        logger.info(f"Step: Deploying {self.SCHEMA_NAME} schema (async)...")
+
+        try:
+            statements = self._generate_ddl_statements()
+            logger.info(f"   Generated {len(statements)} DDL statements from Pydantic models")
+
+            if dry_run:
+                step.status = "success"
+                step.message = f"[DRY RUN] Would execute {len(statements)} statements"
+                step.details = {"statements_count": len(statements)}
+                return step
+
+            # Execute via async repository
+            exec_result = await self.async_repo.execute_ddl_statements(statements)
+
+            step.status = "success" if exec_result["success"] else "failed"
+            step.message = f"Deployed {exec_result['executed']} statements ({exec_result['skipped']} skipped)"
+            step.details = {
+                "statements_executed": exec_result["executed"],
+                "statements_skipped": exec_result["skipped"],
+                "schema": self.SCHEMA_NAME,
+                "errors": exec_result["errors"] if exec_result["errors"] else None,
+            }
+
+            if exec_result["errors"]:
+                step.error = "; ".join(exec_result["errors"][:3])
+
+        except Exception as e:
+            step.status = "failed"
+            step.error = str(e)
+            step.message = f"Schema deployment failed: {e}"
+            logger.error(f"Schema deployment failed: {e}")
+            logger.error(traceback.format_exc())
+
+        logger.info(f"   Result: {step.status} - {step.message}")
+        return step
+
+    async def _verify_tables_async(self) -> StepResult:
+        """Verify expected tables exist using async repository."""
+        step = StepResult(name="verify_tables", status="pending")
+
+        logger.info("Step: Verifying tables (async)...")
+
+        try:
+            existing = await self.async_repo.get_tables_in_schema(self.SCHEMA_NAME)
+
+            missing = [t for t in self.EXPECTED_TABLES if t not in existing]
+            extra = [t for t in existing if t not in self.EXPECTED_TABLES]
+
+            if missing:
+                step.status = "failed"
+                step.error = f"Missing tables: {missing}"
+                step.message = f"Verification failed: {len(missing)} tables missing"
+            else:
+                step.status = "success"
+                step.message = f"All {len(self.EXPECTED_TABLES)} expected tables exist"
+
+            step.details = {
+                "expected": self.EXPECTED_TABLES,
+                "existing": existing,
+                "missing": missing,
+                "extra": extra,
+            }
+
+        except Exception as e:
+            step.status = "failed"
+            step.error = str(e)
+            step.message = f"Verification failed: {e}"
+
+        logger.info(f"   Result: {step.status} - {step.message}")
+        return step
+
+    # ========================================================================
     # CONVENIENCE METHODS
     # ========================================================================
 
     def verify_installation(self) -> Dict[str, Any]:
         """
-        Quick verification of database installation state.
+        Quick verification of database installation state (sync).
 
         Returns:
             Dict with schema existence and table info
@@ -426,44 +568,38 @@ class DatabaseInitializer:
         }
 
         try:
-            with self._get_connection() as conn:
-                with conn.cursor() as cur:
-                    # Check schema exists
-                    cur.execute("""
-                        SELECT EXISTS(
-                            SELECT 1 FROM pg_namespace WHERE nspname = %s
-                        ) as exists
-                    """, [self.SCHEMA_NAME])
-                    result["schema_exists"] = cur.fetchone()["exists"]
+            result["schema_exists"] = self.sync_repo.check_schema_exists(self.SCHEMA_NAME)
 
-                    if result["schema_exists"]:
-                        # Get table info
-                        cur.execute("""
-                            SELECT
-                                t.table_name,
-                                (SELECT COUNT(*) FROM information_schema.columns c
-                                 WHERE c.table_schema = t.table_schema
-                                 AND c.table_name = t.table_name) as column_count
-                            FROM information_schema.tables t
-                            WHERE t.table_schema = %s
-                            ORDER BY t.table_name
-                        """, [self.SCHEMA_NAME])
+            if result["schema_exists"]:
+                tables = self.sync_repo.get_tables_in_schema(self.SCHEMA_NAME)
+                for table in tables:
+                    result["tables"][table] = {"exists": True}
 
-                        for row in cur.fetchall():
-                            result["tables"][row["table_name"]] = {
-                                "columns": row["column_count"]
-                            }
+        except Exception as e:
+            result["error"] = str(e)
 
-                        # Get enum types
-                        cur.execute("""
-                            SELECT typname
-                            FROM pg_type t
-                            JOIN pg_namespace n ON t.typnamespace = n.oid
-                            WHERE n.nspname = %s
-                            AND t.typtype = 'e'
-                            ORDER BY typname
-                        """, [self.SCHEMA_NAME])
-                        result["enum_types"] = [row["typname"] for row in cur.fetchall()]
+        return result
+
+    async def verify_installation_async(self) -> Dict[str, Any]:
+        """
+        Quick verification of database installation state (async).
+
+        Returns:
+            Dict with schema existence and table info
+        """
+        result = {
+            "database": f"{self.host}/{self.database}",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "schema": self.SCHEMA_NAME,
+            "tables": {},
+        }
+
+        try:
+            result["schema_exists"] = await self.async_repo.check_schema_exists(self.SCHEMA_NAME)
+
+            if result["schema_exists"]:
+                result["tables"] = await self.async_repo.get_table_info(self.SCHEMA_NAME)
+                result["enum_types"] = await self.async_repo.get_enum_types(self.SCHEMA_NAME)
 
         except Exception as e:
             result["error"] = str(e)
@@ -471,23 +607,30 @@ class DatabaseInitializer:
         return result
 
     def get_table_counts(self) -> Dict[str, int]:
-        """Get row counts for all tables."""
+        """Get row counts for all tables (sync)."""
         counts = {}
 
         try:
-            with self._get_connection() as conn:
-                with conn.cursor() as cur:
-                    for table in ["dag_jobs", "dag_node_states", "dag_task_results", "dag_job_events"]:
-                        try:
-                            cur.execute(
-                                sql.SQL("SELECT COUNT(*) as count FROM {}.{}").format(
-                                    sql.Identifier(self.SCHEMA_NAME),
-                                    sql.Identifier(table)
-                                )
-                            )
-                            counts[table] = cur.fetchone()["count"]
-                        except Exception:
-                            counts[table] = -1  # Table doesn't exist
+            for table in self.EXPECTED_TABLES:
+                if self.sync_repo.check_table_exists(self.SCHEMA_NAME, table):
+                    counts[table] = self.sync_repo.get_table_row_count(self.SCHEMA_NAME, table)
+                else:
+                    counts[table] = -1
+
+        except Exception as e:
+            logger.warning(f"Failed to get table counts: {e}")
+
+        return counts
+
+    async def get_table_counts_async(self) -> Dict[str, int]:
+        """Get row counts for all tables (async)."""
+        counts = {}
+
+        try:
+            for table in self.EXPECTED_TABLES:
+                counts[table] = await self.async_repo.get_table_row_count(
+                    self.SCHEMA_NAME, table
+                )
 
         except Exception as e:
             logger.warning(f"Failed to get table counts: {e}")
@@ -500,7 +643,6 @@ class DatabaseInitializer:
 # ============================================================================
 
 def initialize_database(
-    connection_string: Optional[str] = None,
     dry_run: bool = False,
 ) -> InitializationResult:
     """
@@ -509,14 +651,31 @@ def initialize_database(
     Convenience function for deployment scripts.
 
     Args:
-        connection_string: PostgreSQL connection string (optional, reads from env)
         dry_run: If True, log SQL but don't execute
 
     Returns:
         InitializationResult with detailed results
     """
-    initializer = DatabaseInitializer(connection_string=connection_string)
+    initializer = DatabaseInitializer()
     return initializer.initialize_all(dry_run=dry_run)
+
+
+async def initialize_database_async(
+    dry_run: bool = False,
+) -> InitializationResult:
+    """
+    Initialize database with dagapp schema (async).
+
+    Convenience function for async contexts.
+
+    Args:
+        dry_run: If True, log SQL but don't execute
+
+    Returns:
+        InitializationResult with detailed results
+    """
+    initializer = DatabaseInitializer()
+    return await initializer.initialize_all_async(dry_run=dry_run)
 
 
 # ============================================================================
@@ -528,4 +687,5 @@ __all__ = [
     'InitializationResult',
     'StepResult',
     'initialize_database',
+    'initialize_database_async',
 ]
