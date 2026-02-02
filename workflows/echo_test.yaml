@@ -1,0 +1,52 @@
+# ============================================================================
+# ECHO TEST WORKFLOW
+# ============================================================================
+# A simple 2-node workflow for testing the orchestrator.
+# START -> echo_handler -> END
+#
+# This workflow:
+# 1. Starts with input parameters
+# 2. Dispatches to echo_handler which returns input as output
+# 3. Completes with the echoed result
+# ============================================================================
+
+workflow_id: echo_test
+name: Echo Test Workflow
+version: 1
+description: Simple test workflow that echoes input parameters
+
+inputs:
+  message:
+    type: string
+    required: true
+    description: Message to echo back
+  count:
+    type: integer
+    required: false
+    default: 1
+    description: Number of times to include message
+
+nodes:
+  start:
+    type: start
+    description: Workflow entry point
+    next: echo_handler
+
+  echo_handler:
+    type: task
+    handler: echo
+    queue: dag-worker-tasks
+    description: Echo the input parameters back
+    params:
+      message: "{{ input.message }}"
+      count: "{{ input.count }}"
+    timeout_seconds: 60
+    retry:
+      max_attempts: 3
+      backoff: exponential
+      initial_delay_seconds: 5
+    next: end
+
+  end:
+    type: end
+    description: Workflow exit point

@@ -1,0 +1,11 @@
+<header class="header">
+    <div class="header-left">
+        <h2 class="page-title">{% block page_title %}{{ page_title | default('Dashboard') }}{% endblock %}</h2>
+    </div>
+    <div class="header-right">
+        <span class="mode-badge">{{ terms.mode_display if terms else 'DAG Orchestrator' }}</span>
+        <button class="btn btn-icon" onclick="location.reload()" title="Refresh">
+            <i data-feather="refresh-cw"></i>
+        </button>
+    </div>
+</header>

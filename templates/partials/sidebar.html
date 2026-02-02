@@ -1,0 +1,50 @@
+<aside class="sidebar">
+    <div class="sidebar-header">
+        <h1 class="logo">
+            <i data-feather="git-branch"></i>
+            <span>DAG</span>
+        </h1>
+        <span class="version">v0.1.0</span>
+    </div>
+
+    <nav class="sidebar-nav">
+        <div class="nav-section">
+            <span class="nav-section-title">Main</span>
+            <a href="/ui" class="nav-item {% if nav_active == 'dashboard' %}active{% endif %}">
+                <i data-feather="home"></i>
+                <span>Dashboard</span>
+            </a>
+            <a href="/ui/health" class="nav-item {% if nav_active == 'health' %}active{% endif %}">
+                <i data-feather="activity"></i>
+                <span>Health</span>
+            </a>
+        </div>
+
+        <div class="nav-section">
+            <span class="nav-section-title">{{ terms.workflow_plural if terms else 'Workflows' }}</span>
+            <a href="/ui/workflows" class="nav-item {% if nav_active == 'workflows' %}active{% endif %}">
+                <i data-feather="git-branch"></i>
+                <span>Definitions</span>
+            </a>
+            <a href="/ui/jobs" class="nav-item {% if nav_active == 'jobs' %}active{% endif %}">
+                <i data-feather="list"></i>
+                <span>Jobs</span>
+            </a>
+        </div>
+
+        <div class="nav-section">
+            <span class="nav-section-title">Monitoring</span>
+            <a href="/ui/nodes" class="nav-item {% if nav_active == 'nodes' %}active{% endif %}">
+                <i data-feather="circle"></i>
+                <span>{{ terms.step_plural if terms else 'Nodes' }}</span>
+            </a>
+        </div>
+    </nav>
+
+    <div class="sidebar-footer">
+        <div class="orchestrator-status">
+            <span class="status-dot {% if orchestrator_running %}running{% else %}stopped{% endif %}"></span>
+            <span>Orchestrator {{ 'Running' if orchestrator_running else 'Stopped' }}</span>
+        </div>
+    </div>
+</aside>

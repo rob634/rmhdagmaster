@@ -1,0 +1,57 @@
+# ============================================================================
+# RASTER VALIDATE TEST WORKFLOW
+# ============================================================================
+# Simple workflow for testing raster validation independently.
+# START -> validate -> END
+#
+# Tests that:
+# 1. Worker can receive task from queue
+# 2. Handler can open raster with rasterio/GDAL
+# 3. Validation results are returned correctly
+# ============================================================================
+
+workflow_id: raster_validate_test
+name: Raster Validate Test
+version: 1
+description: Test raster validation handler independently
+
+inputs:
+  blob_path:
+    type: string
+    required: true
+    description: Path to raster file (local path, blob URL, or /vsiaz/ path)
+  input_crs:
+    type: string
+    required: false
+    description: Optional CRS override (e.g., EPSG:4326)
+  raster_type:
+    type: string
+    required: false
+    default: auto
+    description: Expected raster type (auto, rgb, dem, categorical, multispectral)
+
+nodes:
+  start:
+    type: start
+    description: Workflow entry point
+    next: validate
+
+  validate:
+    type: task
+    handler: raster.validate
+    description: Validate raster file and extract metadata
+    queue: container-tasks
+    params:
+      blob_path: "{{ input.blob_path }}"
+      input_crs: "{{ input.input_crs }}"
+      raster_type: "{{ input.raster_type }}"
+    timeout_seconds: 300
+    retry:
+      max_attempts: 2
+      backoff: fixed
+      initial_delay_seconds: 10
+    next: end
+
+  end:
+    type: end
+    description: Workflow complete - validation results in job output

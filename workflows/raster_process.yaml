@@ -1,0 +1,329 @@
+# ============================================================================
+# RASTER PROCESS WORKFLOW
+# ============================================================================
+# EPOCH: 5 - DAG ORCHESTRATION
+# STATUS: Workflow Definition
+# PURPOSE: Single GeoTIFF in → 1 COG out OR N tile COGs out
+# CREATED: 31 JAN 2026
+# ============================================================================
+#
+# This workflow handles single-file raster processing:
+# - Validation with type detection and compression profile
+# - Conditional tiling based on estimated compressed output size
+# - Reprojection + COG creation (combined for efficiency)
+# - STAC metadata registration (item or collection)
+#
+# Option B architecture: Single worker, sequential, checkpoint-based
+# No queue fan-out - tiling handled internally with checkpoints
+#
+# ============================================================================
+
+workflow_id: raster_process
+name: Raster Processing
+version: 1
+description: |
+  Process a single GeoTIFF into Cloud-Optimized GeoTIFF format.
+  Handles validation, reprojection, COG creation, and STAC registration.
+  Automatically tiles large outputs based on estimated compressed size.
+
+# ============================================================================
+# INPUT PARAMETERS
+# ============================================================================
+
+inputs:
+  # Required
+  blob_name:
+    type: string
+    required: true
+    description: Source raster blob path in bronze container
+
+  container_name:
+    type: string
+    required: true
+    description: Source container name (typically bronze-rasters)
+
+  collection_id:
+    type: string
+    required: true
+    description: STAC collection ID for output registration
+
+  # CRS handling
+  input_crs:
+    type: string
+    required: false
+    description: Source CRS override (e.g., "EPSG:4326") if file lacks CRS
+
+  target_crs:
+    type: string
+    required: false
+    default: "EPSG:4326"
+    description: Target CRS for reprojection
+
+  # Raster type
+  raster_type:
+    type: string
+    required: false
+    default: "auto"
+    description: |
+      Raster type hint: auto, rgb, rgba, dem, categorical, multispectral, nir.
+      Auto-detection used if not specified.
+
+  # Output configuration
+  output_tier:
+    type: string
+    required: false
+    default: "analysis"
+    description: |
+      COG tier: visualization (JPEG, RGB only), analysis (DEFLATE), archive (LZW)
+
+  output_folder:
+    type: string
+    required: false
+    description: Optional subfolder in silver-cogs container
+
+  # Tiling configuration
+  tiling_threshold_mb:
+    type: integer
+    required: false
+    default: 512
+    description: Estimated compressed output size threshold for tiling (MB)
+
+  tile_size:
+    type: integer
+    required: false
+    description: Tile size in pixels (auto-calculated if not specified)
+
+  tile_overlap:
+    type: integer
+    required: false
+    default: 512
+    description: Tile overlap in pixels for seamless mosaics
+
+  # STAC metadata
+  item_id:
+    type: string
+    required: false
+    description: Custom STAC item ID (auto-generated if not specified)
+
+  title:
+    type: string
+    required: false
+    description: Human-readable title for STAC item
+
+  tags:
+    type: array
+    required: false
+    description: Tags for STAC item metadata
+
+  # Platform integration (passthrough)
+  dataset_id:
+    type: string
+    required: false
+    description: DDH dataset ID for artifact tracking
+
+  resource_id:
+    type: string
+    required: false
+    description: DDH resource ID
+
+  version_id:
+    type: string
+    required: false
+    description: DDH version ID
+
+  access_level:
+    type: string
+    required: false
+    description: DDH access level
+
+# ============================================================================
+# WORKFLOW NODES
+# ============================================================================
+
+nodes:
+  # --------------------------------------------------------------------------
+  # START
+  # --------------------------------------------------------------------------
+  START:
+    type: start
+    next: copy_to_mount
+
+  # --------------------------------------------------------------------------
+  # NODE A: Copy blob to mounted storage
+  # --------------------------------------------------------------------------
+  copy_to_mount:
+    type: task
+    handler: raster.blob_to_mount
+    queue: container-tasks
+    params:
+      blob_name: "{{ inputs.blob_name }}"
+      container_name: "{{ inputs.container_name }}"
+    next: validate_raster
+
+  # --------------------------------------------------------------------------
+  # NODE B: Validate raster
+  # --------------------------------------------------------------------------
+  # Performs: CRS validation, type detection, compression profile selection,
+  # bit-depth check, bounds validation, compressed size estimation
+  validate_raster:
+    type: task
+    handler: raster.validate
+    queue: container-tasks
+    params:
+      local_path: "{{ nodes.copy_to_mount.output.local_path }}"
+      input_crs: "{{ inputs.input_crs }}"
+      raster_type: "{{ inputs.raster_type }}"
+      output_tier: "{{ inputs.output_tier }}"
+    next: check_tiling
+
+  # --------------------------------------------------------------------------
+  # NODE C: Tiling decision (conditional)
+  # --------------------------------------------------------------------------
+  # Routes based on estimated compressed output size vs threshold
+  check_tiling:
+    type: conditional
+    condition: "{{ nodes.validate_raster.output.estimated_compressed_mb > inputs.tiling_threshold_mb }}"
+    branches:
+      true: generate_tiling_scheme
+      false: create_cog_single
+
+  # ==========================================================================
+  # SINGLE COG PATH (estimated output <= threshold)
+  # ==========================================================================
+
+  # --------------------------------------------------------------------------
+  # NODE D+E (single): Reproject and create COG
+  # --------------------------------------------------------------------------
+  create_cog_single:
+    type: task
+    handler: raster.create_cog
+    queue: container-tasks
+    timeout_seconds: 7200  # 2 hours for large files
+    params:
+      local_path: "{{ nodes.copy_to_mount.output.local_path }}"
+      validation: "{{ nodes.validate_raster.output }}"
+      target_crs: "{{ inputs.target_crs }}"
+      output_tier: "{{ inputs.output_tier }}"
+      output_folder: "{{ inputs.output_folder }}"
+    next: ensure_collection_single
+
+  # --------------------------------------------------------------------------
+  # NODE F.1 (single): Ensure STAC collection exists
+  # --------------------------------------------------------------------------
+  # Swappable: Replace with "use_existing_collection" to skip creation
+  ensure_collection_single:
+    type: task
+    handler: raster.stac_ensure_collection
+    queue: container-tasks
+    params:
+      collection_id: "{{ inputs.collection_id }}"
+      title: "{{ inputs.title }}"
+      bounds: "{{ nodes.validate_raster.output.bounds }}"
+      # Platform passthrough
+      dataset_id: "{{ inputs.dataset_id }}"
+      access_level: "{{ inputs.access_level }}"
+    next: register_stac_item
+
+  # --------------------------------------------------------------------------
+  # NODE F.2 (single): Register STAC item in collection
+  # --------------------------------------------------------------------------
+  register_stac_item:
+    type: task
+    handler: raster.stac_register_item
+    queue: container-tasks
+    params:
+      cog_blob: "{{ nodes.create_cog_single.output.cog_blob }}"
+      cog_container: "{{ nodes.create_cog_single.output.cog_container }}"
+      validation: "{{ nodes.validate_raster.output }}"
+      collection_id: "{{ inputs.collection_id }}"
+      item_id: "{{ inputs.item_id }}"
+      title: "{{ inputs.title }}"
+      tags: "{{ inputs.tags }}"
+      # Platform passthrough
+      dataset_id: "{{ inputs.dataset_id }}"
+      resource_id: "{{ inputs.resource_id }}"
+      version_id: "{{ inputs.version_id }}"
+      access_level: "{{ inputs.access_level }}"
+    next: END
+
+  # ==========================================================================
+  # TILED COG PATH (estimated output > threshold)
+  # ==========================================================================
+
+  # --------------------------------------------------------------------------
+  # NODE C.1: Generate tiling scheme
+  # --------------------------------------------------------------------------
+  generate_tiling_scheme:
+    type: task
+    handler: raster.generate_tiling_scheme
+    queue: container-tasks
+    params:
+      local_path: "{{ nodes.copy_to_mount.output.local_path }}"
+      validation: "{{ nodes.validate_raster.output }}"
+      tile_size: "{{ inputs.tile_size }}"
+      tile_overlap: "{{ inputs.tile_overlap }}"
+    next: process_tiles
+
+  # --------------------------------------------------------------------------
+  # NODE D+E (tiled): Process all tiles
+  # --------------------------------------------------------------------------
+  # Internal loop with checkpointing - NOT fan-out
+  # Handler iterates tiles, saves checkpoint after each
+  process_tiles:
+    type: task
+    handler: raster.process_tile_batch
+    queue: container-tasks
+    timeout_seconds: 86400  # 24 hours for large tile sets
+    params:
+      local_path: "{{ nodes.copy_to_mount.output.local_path }}"
+      validation: "{{ nodes.validate_raster.output }}"
+      tiling_scheme: "{{ nodes.generate_tiling_scheme.output }}"
+      target_crs: "{{ inputs.target_crs }}"
+      output_tier: "{{ inputs.output_tier }}"
+      output_folder: "{{ inputs.output_folder }}"
+    next: ensure_collection_tiled
+
+  # --------------------------------------------------------------------------
+  # NODE F.1 (tiled): Ensure STAC collection exists
+  # --------------------------------------------------------------------------
+  # Swappable: Replace with "use_existing_collection" to skip creation
+  ensure_collection_tiled:
+    type: task
+    handler: raster.stac_ensure_collection
+    queue: container-tasks
+    params:
+      collection_id: "{{ inputs.collection_id }}"
+      title: "{{ inputs.title }}"
+      bounds: "{{ nodes.process_tiles.output.collection_bounds }}"
+      grid_dimensions: "{{ nodes.generate_tiling_scheme.output.grid_dimensions }}"
+      is_tiled: true
+      # Platform passthrough
+      dataset_id: "{{ inputs.dataset_id }}"
+      access_level: "{{ inputs.access_level }}"
+    next: register_stac_items
+
+  # --------------------------------------------------------------------------
+  # NODE F.2 (tiled): Register STAC items in collection
+  # --------------------------------------------------------------------------
+  register_stac_items:
+    type: task
+    handler: raster.stac_register_items
+    queue: container-tasks
+    params:
+      tile_cogs: "{{ nodes.process_tiles.output.tile_cogs }}"
+      cog_container: "{{ nodes.process_tiles.output.cog_container }}"
+      validation: "{{ nodes.validate_raster.output }}"
+      collection_id: "{{ inputs.collection_id }}"
+      tags: "{{ inputs.tags }}"
+      # Platform passthrough
+      dataset_id: "{{ inputs.dataset_id }}"
+      resource_id: "{{ inputs.resource_id }}"
+      version_id: "{{ inputs.version_id }}"
+      access_level: "{{ inputs.access_level }}"
+    next: END
+
+  # --------------------------------------------------------------------------
+  # END
+  # --------------------------------------------------------------------------
+  END:
+    type: end

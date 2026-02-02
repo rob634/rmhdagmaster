@@ -1,0 +1,146 @@
+# ============================================================================
+# RASTER PROCESSING WORKFLOW
+# ============================================================================
+# Validates raster, routes by size, creates COG, registers to STAC.
+# Demonstrates conditional routing (3 processing paths based on file size).
+# ============================================================================
+
+workflow_id: raster_processing
+name: Raster Processing Pipeline
+version: 1
+description: |
+  Full raster processing workflow:
+  1. Validate input raster
+  2. Route to appropriate processor based on file size
+  3. Create Cloud-Optimized GeoTIFF (COG)
+  4. Register to STAC catalog
+
+inputs:
+  container_name:
+    type: string
+    required: true
+    description: Azure Blob Storage container
+  blob_name:
+    type: string
+    required: true
+    description: Path to source raster file
+  collection_id:
+    type: string
+    required: true
+    default: "default-collection"
+    description: STAC collection to register to
+
+nodes:
+  # ─────────────────────────────────────────────────────────────────────────
+  # START
+  # ─────────────────────────────────────────────────────────────────────────
+  START:
+    type: start
+    next: validate
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # VALIDATION (Function App - lightweight)
+  # ─────────────────────────────────────────────────────────────────────────
+  validate:
+    type: task
+    handler: raster_validate
+    queue: functionapp-tasks
+    timeout_seconds: 300
+    retry:
+      max_attempts: 3
+      backoff: exponential
+    params:
+      container_name: "{{ inputs.container_name }}"
+      blob_name: "{{ inputs.blob_name }}"
+    description: Validate raster file exists and is readable
+    next: route_by_size
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # CONDITIONAL ROUTING
+  # ─────────────────────────────────────────────────────────────────────────
+  route_by_size:
+    type: conditional
+    description: Route to appropriate processor based on file size
+    condition_field: "{{ nodes.validate.output.size_mb }}"
+    branches:
+      - name: small
+        condition: "< 100"
+        next: process_fa
+      - name: medium
+        condition: "< 1000"
+        next: process_docker_memory
+      - name: large
+        default: true
+        next: process_docker_mount
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # PROCESSING PATHS (mutually exclusive)
+  # ─────────────────────────────────────────────────────────────────────────
+  process_fa:
+    type: task
+    handler: raster_cog_functionapp
+    queue: functionapp-tasks
+    timeout_seconds: 600
+    description: Process small rasters on Function App (< 100MB)
+    params:
+      source_url: "{{ nodes.validate.output.blob_url }}"
+      collection_id: "{{ inputs.collection_id }}"
+    next: register_stac
+
+  process_docker_memory:
+    type: task
+    handler: raster_cog_docker
+    queue: container-tasks
+    timeout_seconds: 1800
+    retry:
+      max_attempts: 3
+      backoff: exponential
+    description: Process medium rasters in Docker with in-memory mode (100MB-1GB)
+    params:
+      source_url: "{{ nodes.validate.output.blob_url }}"
+      collection_id: "{{ inputs.collection_id }}"
+      use_mount: false
+    next: register_stac
+
+  process_docker_mount:
+    type: task
+    handler: raster_cog_docker
+    queue: container-tasks
+    timeout_seconds: 7200
+    retry:
+      max_attempts: 3
+      backoff: exponential
+    description: Process large rasters in Docker with blob mount (> 1GB)
+    params:
+      source_url: "{{ nodes.validate.output.blob_url }}"
+      collection_id: "{{ inputs.collection_id }}"
+      use_mount: true
+    next: register_stac
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # STAC REGISTRATION (fan-in from any processing path)
+  # ─────────────────────────────────────────────────────────────────────────
+  register_stac:
+    type: task
+    handler: stac_register
+    queue: functionapp-tasks
+    timeout_seconds: 300
+    description: Register COG to STAC catalog
+    # Fan-in: runs when ANY upstream completes (OR semantics)
+    # The orchestrator tracks which branch was taken
+    depends_on:
+      any_of:
+        - process_fa
+        - process_docker_memory
+        - process_docker_mount
+    params:
+      cog_url: "{{ upstream.output.cog_url }}"
+      collection_id: "{{ inputs.collection_id }}"
+      metadata: "{{ upstream.output.metadata }}"
+    next: END
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # END
+  # ─────────────────────────────────────────────────────────────────────────
+  END:
+    type: end

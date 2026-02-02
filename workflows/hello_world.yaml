@@ -1,0 +1,41 @@
+# ============================================================================
+# HELLO WORLD WORKFLOW
+# ============================================================================
+# Simplest possible workflow for testing the DAG orchestrator.
+# START -> hello -> END
+# ============================================================================
+
+workflow_id: hello_world
+name: Hello World
+version: 1
+description: |
+  Simplest workflow for testing.
+  Validates that the orchestrator can dispatch a task and handle completion.
+
+inputs:
+  message:
+    type: string
+    required: false
+    default: "Hello from DAG!"
+    description: Message to echo back
+
+nodes:
+  START:
+    type: start
+    next: hello
+
+  hello:
+    type: task
+    handler: hello_world
+    queue: functionapp-tasks
+    timeout_seconds: 60
+    retry:
+      max_attempts: 1
+      backoff: fixed
+    params:
+      message: "{{ inputs.message }}"
+    description: Simple hello world task that echoes a message
+    next: END
+
+  END:
+    type: end

@@ -1,0 +1,175 @@
+{% extends "base.html" %}
+
+{% block title %}Health - DAG Orchestrator{% endblock %}
+
+{% block page_title %}System Health{% endblock %}
+
+{% block content %}
+<div class="health-grid">
+    <!-- Orchestrator Status -->
+    <div class="health-section">
+        <div class="health-section-header">
+            <span class="health-indicator {{ 'healthy' if health.orchestrator.running else 'unhealthy' }}"></span>
+            <h3 class="health-section-title">Orchestrator</h3>
+        </div>
+        <div class="health-items">
+            <div class="health-item">
+                <span class="health-item-label">Status</span>
+                <span class="health-item-value {{ 'text-success' if health.orchestrator.running else 'text-danger' }}">
+                    {{ 'Running' if health.orchestrator.running else 'Stopped' }}
+                </span>
+            </div>
+            <div class="health-item">
+                <span class="health-item-label">Loop Interval</span>
+                <span class="health-item-value">{{ health.orchestrator.loop_interval_seconds | default(5) }}s</span>
+            </div>
+            <div class="health-item">
+                <span class="health-item-label">Last Poll</span>
+                <span class="health-item-value">{{ health.orchestrator.last_poll | default('-') }}</span>
+            </div>
+            <div class="health-item">
+                <span class="health-item-label">Cycles Completed</span>
+                <span class="health-item-value">{{ health.orchestrator.cycles | default(0) }}</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- Database Status -->
+    <div class="health-section">
+        <div class="health-section-header">
+            <span class="health-indicator {{ 'healthy' if health.database.connected else 'unhealthy' }}"></span>
+            <h3 class="health-section-title">Database</h3>
+        </div>
+        <div class="health-items">
+            <div class="health-item">
+                <span class="health-item-label">Connection</span>
+                <span class="health-item-value {{ 'text-success' if health.database.connected else 'text-danger' }}">
+                    {{ 'Connected' if health.database.connected else 'Disconnected' }}
+                </span>
+            </div>
+            <div class="health-item">
+                <span class="health-item-label">Pool Size</span>
+                <span class="health-item-value">{{ health.database.pool_size | default('-') }}</span>
+            </div>
+            <div class="health-item">
+                <span class="health-item-label">Active Connections</span>
+                <span class="health-item-value">{{ health.database.active_connections | default('-') }}</span>
+            </div>
+            <div class="health-item">
+                <span class="health-item-label">Latency</span>
+                <span class="health-item-value">{{ health.database.latency_ms | default('-') }} ms</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- Message Queue Status -->
+    <div class="health-section">
+        <div class="health-section-header">
+            <span class="health-indicator {{ 'healthy' if health.messaging.connected else 'unhealthy' }}"></span>
+            <h3 class="health-section-title">Message Queue</h3>
+        </div>
+        <div class="health-items">
+            <div class="health-item">
+                <span class="health-item-label">Connection</span>
+                <span class="health-item-value {{ 'text-success' if health.messaging.connected else 'text-danger' }}">
+                    {{ 'Connected' if health.messaging.connected else 'Disconnected' }}
+                </span>
+            </div>
+            <div class="health-item">
+                <span class="health-item-label">Queue Name</span>
+                <span class="health-item-value">{{ health.messaging.queue_name | default('-') }}</span>
+            </div>
+            <div class="health-item">
+                <span class="health-item-label">Messages Sent</span>
+                <span class="health-item-value">{{ health.messaging.messages_sent | default(0) }}</span>
+            </div>
+            <div class="health-item">
+                <span class="health-item-label">Send Errors</span>
+                <span class="health-item-value {{ 'text-danger' if health.messaging.send_errors > 0 else '' }}">
+                    {{ health.messaging.send_errors | default(0) }}
+                </span>
+            </div>
+        </div>
+    </div>
+
+    <!-- System Resources -->
+    <div class="health-section">
+        <div class="health-section-header">
+            <span class="health-indicator healthy"></span>
+            <h3 class="health-section-title">System Resources</h3>
+        </div>
+        <div class="health-items">
+            <div class="health-item">
+                <span class="health-item-label">Memory Usage</span>
+                <span class="health-item-value">{{ health.system.memory_percent | default('-') }}%</span>
+            </div>
+            <div class="health-item">
+                <span class="health-item-label">CPU Usage</span>
+                <span class="health-item-value">{{ health.system.cpu_percent | default('-') }}%</span>
+            </div>
+            <div class="health-item">
+                <span class="health-item-label">Uptime</span>
+                <span class="health-item-value">{{ health.system.uptime | default('-') }}</span>
+            </div>
+            <div class="health-item">
+                <span class="health-item-label">Version</span>
+                <span class="health-item-value">{{ health.system.version | default('0.1.0') }}</span>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Workflows Status -->
+<div class="card mt-4">
+    <div class="card-header">
+        <h3 class="card-title">Loaded Workflows</h3>
+    </div>
+    <div class="card-body">
+        {% if health.workflows %}
+        <div class="table-container">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Workflow ID</th>
+                        <th>Status</th>
+                        <th>Nodes</th>
+                        <th>Loaded At</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for wf in health.workflows %}
+                    <tr>
+                        <td><strong>{{ wf.id }}</strong></td>
+                        <td>
+                            <span class="badge {{ 'badge-success' if wf.valid else 'badge-danger' }}">
+                                {{ 'Valid' if wf.valid else 'Invalid' }}
+                            </span>
+                        </td>
+                        <td>{{ wf.node_count | default(0) }}</td>
+                        <td class="text-muted">{{ wf.loaded_at | default('-') }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <div class="empty-state">
+            <i data-feather="git-branch"></i>
+            <div class="empty-state-title">No workflows loaded</div>
+            <div class="empty-state-description">Workflow definitions will be loaded on startup.</div>
+        </div>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    // Auto-refresh health page every 10 seconds
+    setInterval(function() {
+        if (!document.hidden) {
+            location.reload();
+        }
+    }, 10000);
+</script>
+{% endblock %}

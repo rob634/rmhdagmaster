@@ -1,0 +1,86 @@
+# ============================================================================
+# DAG WORKER DOCKERFILE (HEAVY - GDAL)
+# ============================================================================
+# EPOCH: 5 - DAG ORCHESTRATION
+# STATUS: Container Definition - Heavy worker image with GDAL
+# PURPOSE: Run DAG workers that process geospatial tasks
+# CREATED: 01 FEB 2026
+# ============================================================================
+#
+# This is the HEAVY worker image (~2-3GB) with GDAL and geo libraries.
+# Use this for workers that process rasters, vectors, COGs, etc.
+#
+# For the lightweight orchestrator, use Dockerfile (not this file).
+#
+# Base Image: Official OSGeo GDAL (ghcr.io/osgeo/gdal)
+#   - Pre-built GDAL with all dependencies
+#   - Python bindings already configured
+#   - ubuntu-full includes NetCDF, HDF5, Zarr drivers
+#
+# Build:
+#   az acr build --registry rmhazureacr --image rmhdagworker:latest -f Dockerfile.worker .
+#
+# Run:
+#   docker run --env-file worker.env rmhdagworker:latest
+#
+# ============================================================================
+
+# Official OSGeo GDAL image - Python + GDAL pre-configured
+# Using ubuntu-full for comprehensive driver support on heavy ETL tasks
+FROM ghcr.io/osgeo/gdal:ubuntu-full-3.10.1
+
+# Labels
+LABEL maintainer="DAG Platform Team"
+LABEL description="DAG Worker - Epoch 5 (Heavy GDAL)"
+LABEL version="0.1.0"
+
+# Install additional system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3-pip \
+    libpq-dev \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create non-root user
+RUN useradd -m -s /bin/bash worker
+WORKDIR /home/worker/app
+
+# Install Python dependencies first (better layer caching)
+# Note: GDAL Python bindings already included in base image
+COPY requirements-worker.txt .
+RUN python3 -m pip install --no-cache-dir --break-system-packages --ignore-installed \
+    -r requirements-worker.txt
+
+# Copy application code
+COPY --chown=worker:worker __version__.py .
+COPY --chown=worker:worker entrypoint.sh .
+COPY --chown=worker:worker core/ ./core/
+COPY --chown=worker:worker repositories/ ./repositories/
+COPY --chown=worker:worker services/ ./services/
+COPY --chown=worker:worker messaging/ ./messaging/
+COPY --chown=worker:worker infrastructure/ ./infrastructure/
+COPY --chown=worker:worker handlers/ ./handlers/
+COPY --chown=worker:worker worker/ ./worker/
+COPY --chown=worker:worker workflows/ ./workflows/
+
+# Make entrypoint executable
+RUN chmod +x entrypoint.sh
+
+# Switch to non-root user
+USER worker
+
+# Environment defaults
+ENV RUN_MODE=worker
+ENV PORT=8000
+ENV PYTHONPATH=/home/worker/app
+ENV PYTHONUNBUFFERED=1
+
+# Expose port for health checks
+EXPOSE 8000
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+    CMD curl -f http://localhost:8000/health || exit 1
+
+# Run via entrypoint (worker mode)
+ENTRYPOINT ["/home/worker/app/entrypoint.sh"]

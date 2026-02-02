@@ -1,0 +1,42 @@
+# ============================================================================
+# rmhdagmaster - DAG Orchestrator Dependencies
+# ============================================================================
+# EPOCH: 5 - DAG ORCHESTRATION
+# LAST_UPDATED: 28 JAN 2026
+# ============================================================================
+
+# Core Framework
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
+pydantic>=2.5.0
+pydantic-settings>=2.1.0
+
+# Async Support
+asyncio>=3.4.3
+aiohttp>=3.9.0
+httpx>=0.26.0
+
+# Database
+asyncpg>=0.29.0
+psycopg[binary]>=3.1.0
+
+# Azure Service Bus
+azure-servicebus>=7.11.0
+azure-identity>=1.15.0
+
+# YAML Processing
+pyyaml>=6.0.1
+ruamel.yaml>=0.18.0
+
+# Utilities
+python-dateutil>=2.8.2
+python-json-logger>=2.0.7
+
+# Development
+pytest>=7.4.0
+pytest-asyncio>=0.23.0
+pytest-cov>=4.1.0
+
+# Type Checking
+mypy>=1.8.0
+types-PyYAML>=6.0.0

@@ -1,0 +1,57 @@
+# ============================================================================
+# DAG Worker Dependencies (Heavy - GDAL)
+# ============================================================================
+# Python dependencies for heavy DAG workers with geospatial processing.
+#
+# NOTE: GDAL is NOT listed here - it comes pre-installed in the base image
+# (ghcr.io/osgeo/gdal:ubuntu-full-3.10.1). Do NOT add GDAL to this file.
+#
+# CREATED: 01 FEB 2026
+# ============================================================================
+
+# Azure - Core
+azure-identity>=1.15.0
+azure-storage-blob>=12.19.0
+azure-servicebus>=7.11.0
+azure-monitor-opentelemetry>=1.6.0
+aiohttp>=3.9.0
+
+# Database - Shared Postgres repositories (psycopg3)
+psycopg[binary]>=3.1.0
+psycopg-pool>=3.1.0
+
+# Web (minimal - for health endpoint only)
+httpx>=0.27.0
+
+# Schema validation
+pydantic>=2.0.0
+pydantic-settings>=2.1.0
+
+# Health monitoring
+psutil>=5.9.0
+
+# ============================================================================
+# GEOSPATIAL - Heavy libraries for raster/vector processing
+# ============================================================================
+
+# Rasterio - Raster I/O (uses GDAL under the hood)
+rasterio>=1.3.1
+
+# COG creation and validation
+rio-cogeo>=5.0.0
+
+# STAC metadata generation from rasters
+rio-stac>=0.10.0
+
+# Vector processing
+geopandas>=0.14.0
+shapely>=2.0.0
+
+# STAC catalog operations
+pypgstac>=0.9.0
+pystac>=1.13.0
+pystac-client>=0.7.0
+stac-pydantic>=3.4.0
+
+# NumPy (often needed for raster operations)
+numpy>=1.26.0

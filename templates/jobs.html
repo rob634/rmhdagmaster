@@ -1,0 +1,153 @@
+{% extends "base.html" %}
+{% from "partials/status_badge.html" import badge %}
+
+{% block title %}Jobs - DAG Orchestrator{% endblock %}
+
+{% block page_title %}Jobs{% endblock %}
+
+{% block content %}
+<!-- Filters -->
+<div class="card mb-4">
+    <div class="card-body">
+        <form method="GET" action="/ui/jobs" style="display: flex; gap: 16px; align-items: center; flex-wrap: wrap;">
+            <div>
+                <label class="text-muted" style="font-size: 12px; display: block; margin-bottom: 4px;">Status</label>
+                <select name="status" class="btn btn-secondary" onchange="this.form.submit()">
+                    <option value="">All Statuses</option>
+                    <option value="pending" {{ 'selected' if filters.status == 'pending' }}>Pending</option>
+                    <option value="running" {{ 'selected' if filters.status == 'running' }}>Running</option>
+                    <option value="completed" {{ 'selected' if filters.status == 'completed' }}>Completed</option>
+                    <option value="failed" {{ 'selected' if filters.status == 'failed' }}>Failed</option>
+                    <option value="cancelled" {{ 'selected' if filters.status == 'cancelled' }}>Cancelled</option>
+                </select>
+            </div>
+            <div>
+                <label class="text-muted" style="font-size: 12px; display: block; margin-bottom: 4px;">Workflow</label>
+                <select name="workflow_id" class="btn btn-secondary" onchange="this.form.submit()">
+                    <option value="">All Workflows</option>
+                    {% for wf in workflows %}
+                    <option value="{{ wf.id }}" {{ 'selected' if filters.workflow_id == wf.id }}>{{ wf.id }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div style="margin-left: auto;">
+                <label style="font-size: 12px; display: block; margin-bottom: 4px; visibility: hidden;">Actions</label>
+                <a href="/ui/jobs" class="btn btn-secondary">Reset Filters</a>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Jobs Table -->
+<div class="card">
+    <div class="card-header">
+        <h3 class="card-title">
+            Jobs
+            {% if pagination.total %}
+            <span class="text-muted" style="font-weight: normal; font-size: 14px;">
+                ({{ pagination.total }} total)
+            </span>
+            {% endif %}
+        </h3>
+    </div>
+    <div class="card-body">
+        {% if jobs %}
+        <div class="table-container">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Job ID</th>
+                        <th>Workflow</th>
+                        <th>Status</th>
+                        <th>Progress</th>
+                        <th>Created</th>
+                        <th>Duration</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for job in jobs %}
+                    <tr data-job-id="{{ job.job_id }}">
+                        <td>
+                            <a href="/ui/jobs/{{ job.job_id }}">
+                                <code>{{ job.job_id[:12] }}...</code>
+                            </a>
+                        </td>
+                        <td>{{ job.workflow_id }}</td>
+                        <td>{{ badge(job.status) }}</td>
+                        <td>
+                            <div style="display: flex; align-items: center; gap: 8px;">
+                                <div style="flex: 1; height: 6px; background: var(--color-bg-tertiary); border-radius: 3px; overflow: hidden;">
+                                    {% set progress = (job.completed_nodes / job.total_nodes * 100) if job.total_nodes > 0 else 0 %}
+                                    <div style="width: {{ progress }}%; height: 100%; background: var(--color-success);"></div>
+                                </div>
+                                <span class="text-muted" style="font-size: 12px; min-width: 40px;">
+                                    {{ job.completed_nodes | default(0) }}/{{ job.total_nodes | default(0) }}
+                                </span>
+                            </div>
+                        </td>
+                        <td class="text-muted">{{ job.created_at | default('-') }}</td>
+                        <td class="text-muted">
+                            {% if job.duration_ms %}
+                                {{ (job.duration_ms / 1000) | round(1) }}s
+                            {% elif job.status == 'running' %}
+                                <span class="text-info">In progress</span>
+                            {% else %}
+                                -
+                            {% endif %}
+                        </td>
+                        <td>
+                            <a href="/ui/jobs/{{ job.job_id }}" class="btn btn-icon" title="View Details">
+                                <i data-feather="eye"></i>
+                            </a>
+                            {% if job.status == 'running' %}
+                            <button class="btn btn-icon" onclick="cancelJob('{{ job.job_id }}')" title="Cancel Job">
+                                <i data-feather="x"></i>
+                            </button>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+
+        <!-- Pagination -->
+        {% if pagination.total_pages > 1 %}
+        <div style="display: flex; justify-content: center; gap: 8px; margin-top: 24px;">
+            {% if pagination.page > 1 %}
+            <a href="?page={{ pagination.page - 1 }}&status={{ filters.status }}&workflow_id={{ filters.workflow_id }}"
+               class="btn btn-secondary">
+                Previous
+            </a>
+            {% endif %}
+
+            <span class="btn btn-secondary" style="cursor: default;">
+                Page {{ pagination.page }} of {{ pagination.total_pages }}
+            </span>
+
+            {% if pagination.page < pagination.total_pages %}
+            <a href="?page={{ pagination.page + 1 }}&status={{ filters.status }}&workflow_id={{ filters.workflow_id }}"
+               class="btn btn-secondary">
+                Next
+            </a>
+            {% endif %}
+        </div>
+        {% endif %}
+
+        {% else %}
+        <div class="empty-state">
+            <i data-feather="inbox"></i>
+            <div class="empty-state-title">No jobs found</div>
+            <div class="empty-state-description">
+                {% if filters.status or filters.workflow_id %}
+                    No jobs match the current filters.
+                {% else %}
+                    Jobs will appear here once workflows are executed.
+                {% endif %}
+            </div>
+        </div>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

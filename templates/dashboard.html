@@ -1,0 +1,141 @@
+{% extends "base.html" %}
+{% from "partials/status_badge.html" import badge %}
+
+{% block title %}Dashboard - DAG Orchestrator{% endblock %}
+
+{% block page_title %}Dashboard{% endblock %}
+
+{% block content %}
+<div class="stats-grid">
+    <div class="stat-card">
+        <div class="stat-card-header">
+            <span class="stat-label">Total Jobs</span>
+            <div class="stat-icon">
+                <i data-feather="layers"></i>
+            </div>
+        </div>
+        <div class="stat-value">{{ stats.total_jobs | default(0) }}</div>
+        <div class="stat-change">All time</div>
+    </div>
+
+    <div class="stat-card">
+        <div class="stat-card-header">
+            <span class="stat-label">Running</span>
+            <div class="stat-icon">
+                <i data-feather="play-circle"></i>
+            </div>
+        </div>
+        <div class="stat-value">{{ stats.running_jobs | default(0) }}</div>
+        <div class="stat-change">Active now</div>
+    </div>
+
+    <div class="stat-card">
+        <div class="stat-card-header">
+            <span class="stat-label">Completed</span>
+            <div class="stat-icon">
+                <i data-feather="check-circle"></i>
+            </div>
+        </div>
+        <div class="stat-value">{{ stats.completed_jobs | default(0) }}</div>
+        <div class="stat-change text-success">Today</div>
+    </div>
+
+    <div class="stat-card">
+        <div class="stat-card-header">
+            <span class="stat-label">Failed</span>
+            <div class="stat-icon">
+                <i data-feather="x-circle"></i>
+            </div>
+        </div>
+        <div class="stat-value">{{ stats.failed_jobs | default(0) }}</div>
+        <div class="stat-change text-danger">Today</div>
+    </div>
+</div>
+
+<div class="card mb-4">
+    <div class="card-header">
+        <h3 class="card-title">Recent Jobs</h3>
+        <a href="/ui/jobs" class="btn btn-secondary">View All</a>
+    </div>
+    <div class="card-body">
+        {% if recent_jobs %}
+        <div class="table-container">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Job ID</th>
+                        <th>Workflow</th>
+                        <th>Status</th>
+                        <th>Progress</th>
+                        <th>Created</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for job in recent_jobs %}
+                    <tr data-job-id="{{ job.job_id }}">
+                        <td>
+                            <a href="/ui/jobs/{{ job.job_id }}">{{ job.job_id[:8] }}...</a>
+                        </td>
+                        <td>{{ job.workflow_id }}</td>
+                        <td>{{ badge(job.status) }}</td>
+                        <td>
+                            {{ job.completed_nodes | default(0) }}/{{ job.total_nodes | default(0) }}
+                        </td>
+                        <td class="text-muted">{{ job.created_at | default('-') }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <div class="empty-state">
+            <i data-feather="inbox"></i>
+            <div class="empty-state-title">No jobs yet</div>
+            <div class="empty-state-description">Jobs will appear here once workflows are executed.</div>
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header">
+        <h3 class="card-title">Available Workflows</h3>
+    </div>
+    <div class="card-body">
+        {% if workflows %}
+        <div class="table-container">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Workflow ID</th>
+                        <th>Description</th>
+                        <th>Nodes</th>
+                        <th>Version</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for wf in workflows %}
+                    <tr>
+                        <td>
+                            <strong>{{ wf.id }}</strong>
+                        </td>
+                        <td class="text-muted">{{ wf.description | default('-') }}</td>
+                        <td>{{ wf.node_count | default(0) }}</td>
+                        <td>
+                            <span class="badge badge-secondary">{{ wf.version | default('1.0') }}</span>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <div class="empty-state">
+            <i data-feather="git-branch"></i>
+            <div class="empty-state-title">No workflows defined</div>
+            <div class="empty-state-description">Add YAML workflow definitions to the workflows/ directory.</div>
+        </div>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

@@ -1,0 +1,27 @@
+{# Status badge partial - pass 'status' variable #}
+{% macro badge(status, size='md') %}
+{% set status_classes = {
+    'pending': 'badge-secondary',
+    'running': 'badge-info',
+    'completed': 'badge-success',
+    'failed': 'badge-danger',
+    'cancelled': 'badge-warning',
+    'ready': 'badge-primary',
+    'dispatched': 'badge-info',
+    'skipped': 'badge-secondary'
+} %}
+{% set status_icons = {
+    'pending': 'clock',
+    'running': 'play-circle',
+    'completed': 'check-circle',
+    'failed': 'x-circle',
+    'cancelled': 'slash',
+    'ready': 'arrow-right',
+    'dispatched': 'send',
+    'skipped': 'skip-forward'
+} %}
+<span class="badge {{ status_classes.get(status, 'badge-secondary') }} badge-{{ size }}">
+    <i data-feather="{{ status_icons.get(status, 'help-circle') }}"></i>
+    {{ status | capitalize }}
+</span>
+{% endmacro %}

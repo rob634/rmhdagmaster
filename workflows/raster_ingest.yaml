@@ -1,0 +1,100 @@
+# ============================================================================
+# RASTER INGEST WORKFLOW
+# ============================================================================
+# A multi-stage workflow for ingesting raster data.
+#
+# Flow:
+#   START -> validate_raster -> generate_cog -> upload_blob -> publish_stac -> END
+#
+# Each node passes its output to the next node via the orchestrator.
+# ============================================================================
+
+workflow_id: raster_ingest
+name: Raster Ingest Pipeline
+version: 1
+description: Ingest raster data - validate, convert to COG, upload, publish to STAC
+
+inputs:
+  source_path:
+    type: string
+    required: true
+    description: Path to source raster file (blob storage path)
+  collection_id:
+    type: string
+    required: true
+    description: Target STAC collection ID
+  asset_id:
+    type: string
+    required: false
+    description: Optional asset ID (generated if not provided)
+
+nodes:
+  # Entry point
+  start:
+    type: start
+    description: Workflow entry point
+    next: validate_raster
+
+  # Stage 1: Validate the input raster
+  validate_raster:
+    type: task
+    handler: raster_validate
+    description: Validate raster file format and metadata
+    params:
+      source_path: "{{ input.source_path }}"
+    timeout_seconds: 300
+    retry:
+      max_attempts: 2
+      backoff: fixed
+      initial_delay_seconds: 10
+    next: generate_cog
+
+  # Stage 2: Convert to Cloud-Optimized GeoTIFF
+  generate_cog:
+    type: task
+    handler: raster_cog_docker
+    description: Convert raster to COG format
+    queue: docker-worker-tasks
+    params:
+      source_path: "{{ input.source_path }}"
+    timeout_seconds: 3600
+    retry:
+      max_attempts: 3
+      backoff: exponential
+      initial_delay_seconds: 30
+      max_delay_seconds: 300
+    next: upload_blob
+
+  # Stage 3: Upload to blob storage
+  upload_blob:
+    type: task
+    handler: blob_upload
+    description: Upload COG to destination blob storage
+    params:
+      collection_id: "{{ input.collection_id }}"
+    timeout_seconds: 600
+    retry:
+      max_attempts: 3
+      backoff: exponential
+      initial_delay_seconds: 10
+    next: publish_stac
+
+  # Stage 4: Publish to STAC catalog
+  publish_stac:
+    type: task
+    handler: stac_publish
+    description: Create STAC item and publish to catalog
+    params:
+      collection_id: "{{ input.collection_id }}"
+      asset_id: "{{ input.asset_id }}"
+    timeout_seconds: 300
+    retry:
+      max_attempts: 3
+      backoff: fixed
+      initial_delay_seconds: 5
+    next: end
+
+  # Exit point
+  end:
+    type: end
+    description: Workflow complete
