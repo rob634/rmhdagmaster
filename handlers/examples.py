@@ -48,8 +48,8 @@ async def echo_handler(ctx: HandlerContext) -> HandlerResult:
     """
     logger.info(f"Echo handler called with params: {ctx.params}")
 
-    # Check if multi-step mode is requested
-    total_steps = ctx.params.get("steps", 1)
+    # Check if multi-step mode is requested (cast to int as YAML templates return strings)
+    total_steps = int(ctx.params.get("steps", 1))
 
     if total_steps <= 1:
         # Simple mode: just echo params
@@ -79,7 +79,8 @@ async def echo_handler(ctx: HandlerContext) -> HandlerResult:
         ctx.report_progress(step, total_steps, f"Step {step} of {total_steps}")
 
         # Simulate work
-        await asyncio.sleep(ctx.params.get("step_delay", 0.1))
+        step_delay = float(ctx.params.get("step_delay", 0.1))
+        await asyncio.sleep(step_delay)
 
         # Record completion
         completed_steps.append(f"step_{step}")
