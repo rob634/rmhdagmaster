@@ -19,6 +19,7 @@
 9. [Implementation Plan: P2 Advanced Features](#9-implementation-plan-p2-advanced-features)
 10. [Implementation Plan: P3 Observability](#10-implementation-plan-p3-observability)
 11. [Implementation Priority Summary](#11-implementation-priority-summary)
+12. [Concurrency Control & Locking Implementation](#12-concurrency-control--locking-implementation)
 
 ---
 
@@ -3022,6 +3023,538 @@ class TaskExecutor:
 
 ---
 
+## 12. Concurrency Control & Locking Implementation
+
+**Added**: 02 FEB 2026
+**Priority**: P1.5 (Foundation - recommended before advanced features)
+
+### 12.1 Problem Statement
+
+Even with a single orchestrator, race conditions can occur:
+
+1. **Accidental multi-instance**: Developer runs orchestrator locally while Azure instance runs
+2. **Container restart overlap**: Brief window where old and new container both run
+3. **Future scaling**: Horizontal scaling requires proper locking from the start
+4. **Read-modify-write**: `check_and_ready_nodes()` has a read-modify-write pattern
+
+### 12.2 Locking Strategy
+
+Four layers of defense, using PostgreSQL advisory locks:
+
+```
+Layer 1: ORCHESTRATOR LOCK (Session-level)
+├── Only one orchestrator process runs at a time
+├── Acquired at startup, held for process lifetime
+├── Auto-releases on crash/disconnect
+└── Implementation: pg_try_advisory_lock(hash)
+
+Layer 2: JOB LOCK (Transaction-level)
+├── One process handles a job at a time
+├── Non-blocking: skip job if locked
+├── Enables future horizontal scaling
+└── Implementation: pg_try_advisory_xact_lock(hash)
+
+Layer 3: OPTIMISTIC LOCKING (Version column)
+├── Detect concurrent modifications
+├── Retry on conflict, don't crash
+├── Fine-grained: per-row protection
+└── Implementation: WHERE version = expected
+
+Layer 4: IDEMPOTENT TRANSITIONS (Already have)
+├── Conditional WHERE clauses
+├── WHERE status = 'ready' for dispatch
+├── WHERE processed = false for results
+└── Implementation: Already exists
+```
+
+### 12.3 PostgreSQL Advisory Locks
+
+Advisory locks are application-level locks in PostgreSQL:
+
+```sql
+-- Session-level (held until released or disconnect)
+SELECT pg_try_advisory_lock(12345);      -- Returns true if acquired
+SELECT pg_advisory_unlock(12345);         -- Release
+
+-- Transaction-level (auto-release at commit/rollback)
+SELECT pg_try_advisory_xact_lock(12345);  -- Returns true if acquired
+-- No unlock needed - releases at transaction end
+```
+
+**Key properties**:
+- Fast (in-memory, no disk I/O)
+- Auto-release on disconnect (crash-safe)
+- Supports non-blocking try_lock
+- 64-bit key space
+
+### 12.4 Implementation: LockService
+
+**File**: `infrastructure/locking.py`
+
+```python
+"""
+Distributed Locking Service
+
+Uses PostgreSQL advisory locks for coordination.
+Zero external dependencies - just Postgres.
+"""
+
+import hashlib
+import logging
+from contextlib import asynccontextmanager
+from typing import Optional
+
+from psycopg_pool import AsyncConnectionPool
+
+logger = logging.getLogger(__name__)
+
+
+class LockService:
+    """PostgreSQL-based distributed locking."""
+
+    ORCHESTRATOR_LOCK = "rmhdag:orchestrator"
+    JOB_LOCK_PREFIX = "rmhdag:job:"
+
+    def __init__(self, pool: AsyncConnectionPool):
+        self.pool = pool
+        self._orchestrator_conn = None
+
+    @staticmethod
+    def _hash_to_lock_id(key: str) -> int:
+        """Convert string key to int64 for PostgreSQL advisory lock."""
+        h = hashlib.sha256(key.encode()).digest()[:8]
+        return int.from_bytes(h, byteorder='big', signed=True)
+
+    # ═══════════════════════════════════════════════════════════════
+    # LAYER 1: ORCHESTRATOR LOCK
+    # ═══════════════════════════════════════════════════════════════
+
+    async def try_acquire_orchestrator_lock(self) -> bool:
+        """
+        Try to acquire the global orchestrator lock.
+
+        Only one orchestrator should run at a time. This lock is held
+        for the lifetime of the orchestrator process via a dedicated connection.
+
+        Returns:
+            True if lock acquired, False if another orchestrator holds it
+        """
+        lock_id = self._hash_to_lock_id(self.ORCHESTRATOR_LOCK)
+
+        # Get a dedicated connection to hold the session-level lock
+        self._orchestrator_conn = await self.pool.getconn()
+
+        try:
+            result = await self._orchestrator_conn.execute(
+                "SELECT pg_try_advisory_lock(%s) as acquired",
+                (lock_id,),
+            )
+            row = await result.fetchone()
+            acquired = row[0] if row else False
+
+            if acquired:
+                logger.info("Acquired orchestrator lock")
+            else:
+                logger.warning(
+                    "Failed to acquire orchestrator lock - another instance running?"
+                )
+                await self.pool.putconn(self._orchestrator_conn)
+                self._orchestrator_conn = None
+
+            return acquired
+
+        except Exception as e:
+            logger.error(f"Error acquiring orchestrator lock: {e}")
+            if self._orchestrator_conn:
+                await self.pool.putconn(self._orchestrator_conn)
+                self._orchestrator_conn = None
+            return False
+
+    async def release_orchestrator_lock(self) -> None:
+        """Release the orchestrator lock."""
+        if self._orchestrator_conn:
+            lock_id = self._hash_to_lock_id(self.ORCHESTRATOR_LOCK)
+            try:
+                await self._orchestrator_conn.execute(
+                    "SELECT pg_advisory_unlock(%s)",
+                    (lock_id,),
+                )
+                logger.info("Released orchestrator lock")
+            finally:
+                await self.pool.putconn(self._orchestrator_conn)
+                self._orchestrator_conn = None
+
+    # ═══════════════════════════════════════════════════════════════
+    # LAYER 2: JOB LOCK
+    # ═══════════════════════════════════════════════════════════════
+
+    @asynccontextmanager
+    async def job_lock(self, job_id: str, blocking: bool = False):
+        """
+        Context manager for job-level locking.
+
+        Args:
+            job_id: Job to lock
+            blocking: If True, wait for lock. If False, skip if unavailable.
+
+        Yields:
+            True if lock acquired, False otherwise
+
+        Usage:
+            async with lock_service.job_lock(job_id) as acquired:
+                if acquired:
+                    await process_job(job)
+        """
+        lock_id = self._hash_to_lock_id(f"{self.JOB_LOCK_PREFIX}{job_id}")
+
+        async with self.pool.connection() as conn:
+            if blocking:
+                # Blocking: wait for lock
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock(%s)", (lock_id,)
+                )
+                acquired = True
+            else:
+                # Non-blocking: return immediately
+                result = await conn.execute(
+                    "SELECT pg_try_advisory_xact_lock(%s) as acquired",
+                    (lock_id,),
+                )
+                row = await result.fetchone()
+                acquired = row[0] if row else False
+
+            if acquired:
+                logger.debug(f"Acquired lock for job {job_id}")
+            else:
+                logger.debug(f"Job {job_id} locked by another process")
+
+            try:
+                yield acquired
+            finally:
+                # Transaction-level locks auto-release
+                if acquired:
+                    logger.debug(f"Released lock for job {job_id}")
+
+
+class LockNotAcquired(Exception):
+    """Raised when a required lock cannot be acquired."""
+    pass
+```
+
+### 12.5 Implementation: Version Column (Layer 3)
+
+**Model update** (`core/models/node.py`):
+
+```python
+class NodeState(NodeData):
+    """Runtime state of a node within a job."""
+
+    # ... existing fields ...
+
+    # Optimistic locking
+    version: int = Field(default=1, description="Version for optimistic locking")
+```
+
+**Repository update** (`repositories/node_repo.py`):
+
+```python
+async def update(self, node: NodeState) -> bool:
+    """
+    Update a node state with optimistic locking.
+
+    Returns:
+        True if update succeeded, False if version conflict
+    """
+    async with self.pool.connection() as conn:
+        result = await conn.execute(
+            f"""
+            UPDATE {TABLE_NODES} SET
+                status = %(status)s,
+                task_id = %(task_id)s,
+                output = %(output)s,
+                error_message = %(error_message)s,
+                retry_count = %(retry_count)s,
+                started_at = %(started_at)s,
+                completed_at = %(completed_at)s,
+                version = version + 1
+            WHERE job_id = %(job_id)s
+              AND node_id = %(node_id)s
+              AND version = %(version)s
+            """,
+            {
+                "job_id": node.job_id,
+                "node_id": node.node_id,
+                "status": node.status.value,
+                "task_id": node.task_id,
+                "output": Json(node.output) if node.output else None,
+                "error_message": node.error_message,
+                "retry_count": node.retry_count,
+                "started_at": node.started_at,
+                "completed_at": node.completed_at,
+                "version": node.version,
+            },
+        )
+
+        if result.rowcount == 0:
+            logger.warning(
+                f"Version conflict updating node {node.node_id} "
+                f"(expected version {node.version})"
+            )
+            return False
+
+        node.version += 1
+        return True
+```
+
+**Migration** (`api/bootstrap_routes.py`):
+
+```python
+{
+    "table": "dag_node_states",
+    "column": "version",
+    "sql": """
+        ALTER TABLE dagapp.dag_node_states
+        ADD COLUMN IF NOT EXISTS version INTEGER DEFAULT 1 NOT NULL
+    """,
+},
+{
+    "table": "dag_jobs",
+    "column": "version",
+    "sql": """
+        ALTER TABLE dagapp.dag_jobs
+        ADD COLUMN IF NOT EXISTS version INTEGER DEFAULT 1 NOT NULL
+    """,
+},
+```
+
+### 12.6 Implementation: Orchestrator Integration
+
+**Update Orchestrator.start()** (`orchestrator/loop.py`):
+
+```python
+async def start(self) -> None:
+    """Start the orchestration loop."""
+    if self._running:
+        logger.warning("Orchestrator already running")
+        return
+
+    # Acquire orchestrator lock first
+    self._has_orchestrator_lock = await self.lock_service.try_acquire_orchestrator_lock()
+    if not self._has_orchestrator_lock:
+        raise RuntimeError(
+            "Cannot start: another orchestrator instance is running. "
+            "Check for duplicate deployments."
+        )
+
+    self._running = True
+    self._started_at = datetime.utcnow()
+    self._publisher = await get_publisher()
+    self._task = asyncio.create_task(self._run_loop())
+    logger.info("Orchestrator started with exclusive lock")
+```
+
+**Update Orchestrator.stop()** (`orchestrator/loop.py`):
+
+```python
+async def stop(self) -> None:
+    """Stop the orchestration loop."""
+    self._running = False
+
+    if self._task:
+        self._task.cancel()
+        try:
+            await self._task
+        except asyncio.CancelledError:
+            pass
+        self._task = None
+
+    # Release orchestrator lock
+    if self._has_orchestrator_lock:
+        await self.lock_service.release_orchestrator_lock()
+        self._has_orchestrator_lock = False
+
+    logger.info("Orchestrator stopped, lock released")
+```
+
+**Update _process_job()** (`orchestrator/loop.py`):
+
+```python
+async def _process_job(self, job: Job) -> None:
+    """Process a single active job with job-level locking."""
+    async with self.lock_service.job_lock(job.job_id, blocking=False) as acquired:
+        if not acquired:
+            logger.debug(f"Skipping job {job.job_id} - locked by another process")
+            return
+
+        await self._process_job_internal(job)
+```
+
+### 12.7 Service Layer: Handling Version Conflicts
+
+**Update NodeService.check_and_ready_nodes()** (`services/node_service.py`):
+
+```python
+async def check_and_ready_nodes(
+    self,
+    job_id: str,
+    workflow: WorkflowDefinition,
+) -> List[NodeState]:
+    """
+    Check pending nodes and mark them READY if dependencies are met.
+
+    Uses optimistic locking - logs and skips on version conflict.
+    """
+    all_nodes = await self.node_repo.get_all_for_job(job_id)
+    completed_nodes: Set[str] = {
+        n.node_id for n in all_nodes
+        if n.status in (NodeStatus.COMPLETED, NodeStatus.SKIPPED)
+    }
+
+    newly_ready: List[NodeState] = []
+    pending_nodes = await self.node_repo.get_pending_nodes(job_id)
+
+    for node in pending_nodes:
+        node_def = workflow.nodes.get(node.node_id)
+        if node_def is None:
+            continue
+
+        if self._dependencies_met(node.node_id, node_def, completed_nodes, workflow):
+            node.mark_ready()
+
+            # Optimistic update with version check
+            success = await self.node_repo.update(node)
+            if success:
+                newly_ready.append(node)
+                logger.debug(f"Node {node.node_id} is now READY")
+
+                if self._event_service:
+                    await self._event_service.emit_node_ready(
+                        node, list(completed_nodes)
+                    )
+            else:
+                # Version conflict - another process modified this node
+                # This is fine - will catch it next cycle
+                logger.debug(
+                    f"Version conflict marking {node.node_id} ready, will retry"
+                )
+
+    return newly_ready
+```
+
+### 12.8 Why Each Lock Lives Where It Does
+
+| Lock Type | Layer | Location | Rationale |
+|-----------|-------|----------|-----------|
+| Orchestrator lock | Infrastructure | `LockService` | Global singleton, infrastructure concern. Not business logic. |
+| Job lock | Infrastructure | `LockService` | Coordination mechanism, called from orchestrator. |
+| Version check | Repository | `NodeRepository` | Data integrity at storage boundary. Prevents bad writes regardless of caller. |
+| Conflict handling | Service | `NodeService` | Business logic decides: retry vs skip vs fail. Has context to make decision. |
+
+**The principle**: Each layer has a single responsibility:
+- **Infrastructure**: "How do we coordinate?"
+- **Repository**: "How do we ensure writes are valid?"
+- **Service**: "What do we do when something goes wrong?"
+
+### 12.9 Testing Concurrency
+
+```python
+# tests/test_locking.py
+
+import pytest
+import asyncio
+from infrastructure.locking import LockService
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_lock_exclusive(pool):
+    """Only one orchestrator can acquire the lock."""
+    lock1 = LockService(pool)
+    lock2 = LockService(pool)
+
+    # First acquires
+    assert await lock1.try_acquire_orchestrator_lock() is True
+
+    # Second fails
+    assert await lock2.try_acquire_orchestrator_lock() is False
+
+    # First releases, second can now acquire
+    await lock1.release_orchestrator_lock()
+    assert await lock2.try_acquire_orchestrator_lock() is True
+
+
+@pytest.mark.asyncio
+async def test_job_lock_non_blocking(pool):
+    """Job locks skip when already held."""
+    lock_service = LockService(pool)
+    job_id = "test-job-123"
+
+    results = []
+
+    async def worker(name: str):
+        async with lock_service.job_lock(job_id, blocking=False) as acquired:
+            results.append((name, acquired))
+            if acquired:
+                await asyncio.sleep(0.1)  # Hold lock briefly
+
+    # Run two workers concurrently
+    await asyncio.gather(worker("A"), worker("B"))
+
+    # One should acquire, one should skip
+    acquired_count = sum(1 for _, acquired in results if acquired)
+    assert acquired_count == 1
+
+
+@pytest.mark.asyncio
+async def test_version_conflict_detection(pool, node_repo):
+    """Version conflicts are detected and reported."""
+    node = NodeState(job_id="job1", node_id="node1", status=NodeStatus.PENDING)
+    await node_repo.create(node)
+
+    # Load two copies
+    node_a = await node_repo.get("job1", "node1")
+    node_b = await node_repo.get("job1", "node1")
+
+    # Both have version 1
+    assert node_a.version == 1
+    assert node_b.version == 1
+
+    # A updates successfully
+    node_a.mark_ready()
+    assert await node_repo.update(node_a) is True
+    assert node_a.version == 2
+
+    # B's update fails (version mismatch)
+    node_b.mark_ready()
+    assert await node_repo.update(node_b) is False
+```
+
+### 12.10 Future: Horizontal Scaling
+
+With this locking foundation, horizontal scaling becomes straightforward:
+
+```python
+# Future: Multiple orchestrators with job partitioning
+
+async def _process_jobs_partitioned(self):
+    """Process jobs assigned to this orchestrator instance."""
+
+    # Each orchestrator takes jobs where hash(job_id) % N == instance_id
+    my_jobs = await self.job_service.list_active_jobs_for_partition(
+        partition_id=self.instance_id,
+        total_partitions=self.total_instances,
+    )
+
+    for job in my_jobs:
+        # Job lock still needed for edge cases (rebalancing, failover)
+        async with self.lock_service.job_lock(job.job_id) as acquired:
+            if acquired:
+                await self._process_job_internal(job)
+```
+
+The current locking implementation enables this future without changes.
+
+---
+
 ## Appendix: Key File Locations
 
 ### Existing Files
@@ -3048,6 +3581,7 @@ class TaskExecutor:
 |----------|-----------|------|
 | P0.1 | Event Repository | `repositories/event_repo.py` |
 | P0.1 | Event Service | `services/event_service.py` |
+| **P1.5** | **Lock Service** | **`infrastructure/locking.py`** |
 | P2.2 | Fan-Out Logic | `orchestrator/engine/fan_out.py` |
 | P2.2 | Fan-In Logic | `orchestrator/engine/fan_in.py` |
 | P2.3 | Checkpointable Handler | `handlers/base.py` |

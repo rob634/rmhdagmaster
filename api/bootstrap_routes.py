@@ -303,6 +303,24 @@ async def run_migrations(
                         WHERE processed = false
                     """,
                 },
+                # dag_node_states.version (optimistic locking)
+                {
+                    "table": "dag_node_states",
+                    "column": "version",
+                    "sql": """
+                        ALTER TABLE dagapp.dag_node_states
+                        ADD COLUMN IF NOT EXISTS version INTEGER DEFAULT 1 NOT NULL
+                    """,
+                },
+                # dag_jobs.version (optimistic locking)
+                {
+                    "table": "dag_jobs",
+                    "column": "version",
+                    "sql": """
+                        ALTER TABLE dagapp.dag_jobs
+                        ADD COLUMN IF NOT EXISTS version INTEGER DEFAULT 1 NOT NULL
+                    """,
+                },
             ]
 
             for migration in migrations:

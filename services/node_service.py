@@ -73,12 +73,15 @@ class NodeService:
         """
         Check pending nodes and mark them READY if dependencies are met.
 
+        Uses optimistic locking: if a version conflict occurs, the node
+        is skipped for this cycle (will be retried next cycle).
+
         Args:
             job_id: Job identifier
             workflow: Workflow definition for dependency info
 
         Returns:
-            List of nodes that were transitioned to READY
+            List of nodes that were successfully transitioned to READY
         """
         # Get all nodes for this job
         all_nodes = await self.node_repo.get_all_for_job(job_id)
@@ -102,14 +105,24 @@ class NodeService:
             # Check if dependencies are met
             if self._dependencies_met(node.node_id, node_def, completed_nodes, workflow):
                 node.mark_ready()
-                await self.node_repo.update(node)
-                newly_ready.append(node)
-                logger.debug(f"Node {node.node_id} is now READY")
 
-                # Emit NODE_READY event
-                if self._event_service:
-                    deps = list(completed_nodes) if completed_nodes else []
-                    await self._event_service.emit_node_ready(node, deps)
+                # Optimistic update with version check (Layer 3)
+                success = await self.node_repo.update(node)
+                if success:
+                    newly_ready.append(node)
+                    logger.debug(f"Node {node.node_id} is now READY")
+
+                    # Emit NODE_READY event
+                    if self._event_service:
+                        deps = list(completed_nodes) if completed_nodes else []
+                        await self._event_service.emit_node_ready(node, deps)
+                else:
+                    # Version conflict - another process modified this node
+                    # This is fine - will retry next cycle
+                    logger.debug(
+                        f"Version conflict marking node {node.node_id} ready, "
+                        f"will retry next cycle"
+                    )
 
         return newly_ready
 
@@ -203,7 +216,18 @@ class NodeService:
                         node.job_id, node.node_id, node.task_id, result.worker_id
                     )
 
-        await self.node_repo.update(node)
+        # Update node with version check (Layer 3)
+        success = await self.node_repo.update(node)
+        if not success:
+            # Version conflict - this is rare for task results since the node
+            # should be in DISPATCHED/RUNNING state which isn't normally modified
+            # by other processes. Log warning and don't mark result as processed
+            # so it will be retried.
+            logger.warning(
+                f"Version conflict updating node {node.node_id} with task result, "
+                f"will retry on next cycle"
+            )
+            return node
 
         # Mark the task result as processed
         await self.task_repo.mark_processed(result.task_id)
@@ -230,12 +254,18 @@ class NodeService:
             return None
 
         if node.prepare_retry():
-            await self.node_repo.update(node)
-            logger.info(
-                f"Node {node_id} prepared for retry "
-                f"(attempt {node.retry_count}/{node.max_retries})"
-            )
-            return node
+            success = await self.node_repo.update(node)
+            if success:
+                logger.info(
+                    f"Node {node_id} prepared for retry "
+                    f"(attempt {node.retry_count}/{node.max_retries})"
+                )
+                return node
+            else:
+                logger.warning(
+                    f"Version conflict preparing retry for node {node_id}"
+                )
+                return None
 
         logger.warning(f"Node {node_id} has no retries remaining")
         return None

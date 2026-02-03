@@ -157,18 +157,22 @@ class NodeRepository:
             rows = await result.fetchall()
             return [self._row_to_node(row) for row in rows]
 
-    async def update(self, node: NodeState) -> NodeState:
+    async def update(self, node: NodeState) -> bool:
         """
-        Update a node state.
+        Update a node state with optimistic locking.
+
+        Uses version column for optimistic locking. If the version in the
+        database doesn't match the expected version, the update fails and
+        returns False (indicating a concurrent modification).
 
         Args:
             node: NodeState with updated fields
 
         Returns:
-            Updated node
+            True if update succeeded, False if version conflict
         """
         async with self.pool.connection() as conn:
-            await conn.execute(
+            result = await conn.execute(
                 f"""
                 UPDATE {TABLE_NODES} SET
                     status = %(status)s,
@@ -177,8 +181,11 @@ class NodeRepository:
                     error_message = %(error_message)s,
                     retry_count = %(retry_count)s,
                     started_at = %(started_at)s,
-                    completed_at = %(completed_at)s
-                WHERE job_id = %(job_id)s AND node_id = %(node_id)s
+                    completed_at = %(completed_at)s,
+                    version = version + 1
+                WHERE job_id = %(job_id)s
+                  AND node_id = %(node_id)s
+                  AND version = %(version)s
                 """,
                 {
                     "job_id": node.job_id,
@@ -190,10 +197,24 @@ class NodeRepository:
                     "retry_count": node.retry_count,
                     "started_at": node.started_at,
                     "completed_at": node.completed_at,
+                    "version": node.version,
                 },
             )
-            logger.debug(f"Updated node {node.node_id} status={node.status.value}")
-            return node
+
+            if result.rowcount == 0:
+                logger.warning(
+                    f"Version conflict updating node {node.node_id} "
+                    f"(expected version {node.version})"
+                )
+                return False
+
+            # Update local version to match DB
+            node.version += 1
+            logger.debug(
+                f"Updated node {node.node_id} status={node.status.value} "
+                f"version={node.version}"
+            )
+            return True
 
     async def get_ready_nodes(self, job_id: str) -> List[NodeState]:
         """
@@ -340,6 +361,88 @@ class NodeRepository:
             )
             return result.rowcount > 0
 
+    async def list_by_status(
+        self,
+        status: Optional[NodeStatus] = None,
+        limit: int = 100,
+    ) -> List[NodeState]:
+        """
+        List nodes across all jobs, optionally filtered by status.
+
+        Args:
+            status: Optional status filter
+            limit: Maximum number of nodes to return
+
+        Returns:
+            List of NodeState instances, ordered by most recent first
+        """
+        async with self.pool.connection() as conn:
+            conn.row_factory = dict_row
+            if status:
+                result = await conn.execute(
+                    f"""
+                    SELECT * FROM {TABLE_NODES}
+                    WHERE status = %s
+                    ORDER BY updated_at DESC
+                    LIMIT %s
+                    """,
+                    (status.value, limit),
+                )
+            else:
+                result = await conn.execute(
+                    f"""
+                    SELECT * FROM {TABLE_NODES}
+                    ORDER BY updated_at DESC
+                    LIMIT %s
+                    """,
+                    (limit,),
+                )
+            rows = await result.fetchall()
+            return [self._row_to_node(row) for row in rows]
+
+    async def list_active(self, limit: int = 100) -> List[NodeState]:
+        """
+        List active (non-terminal) nodes across all jobs.
+
+        Args:
+            limit: Maximum number of nodes to return
+
+        Returns:
+            List of active NodeState instances
+        """
+        async with self.pool.connection() as conn:
+            conn.row_factory = dict_row
+            result = await conn.execute(
+                f"""
+                SELECT * FROM {TABLE_NODES}
+                WHERE status NOT IN ('completed', 'failed', 'skipped')
+                ORDER BY updated_at DESC
+                LIMIT %s
+                """,
+                (limit,),
+            )
+            rows = await result.fetchall()
+            return [self._row_to_node(row) for row in rows]
+
+    async def get_status_counts(self) -> Dict[str, int]:
+        """
+        Get counts of nodes by status across all jobs.
+
+        Returns:
+            Dict mapping status to count
+        """
+        async with self.pool.connection() as conn:
+            conn.row_factory = dict_row
+            result = await conn.execute(
+                f"""
+                SELECT status, COUNT(*) as count
+                FROM {TABLE_NODES}
+                GROUP BY status
+                """
+            )
+            rows = await result.fetchall()
+            return {row["status"]: row["count"] for row in rows}
+
     def _row_to_node(self, row: Dict[str, Any]) -> NodeState:
         """Convert database row to NodeState model."""
         return NodeState(
@@ -358,4 +461,5 @@ class NodeRepository:
             updated_at=row["updated_at"],
             parent_node_id=row.get("parent_node_id"),
             fan_out_index=row.get("fan_out_index"),
+            version=row.get("version", 1),
         )

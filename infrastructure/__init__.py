@@ -52,6 +52,10 @@ from infrastructure.pgstac_search import (
     PgStacSearchRegistration,
     get_search_registrar,
 )
+from infrastructure.locking import (
+    LockService,
+    LockNotAcquired,
+)
 
 __all__ = [
     # Database Initialization
@@ -70,4 +74,7 @@ __all__ = [
     'get_pgstac_repository',
     'PgStacSearchRegistration',
     'get_search_registrar',
+    # Locking
+    'LockService',
+    'LockNotAcquired',
 ]

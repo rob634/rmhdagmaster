@@ -4,7 +4,7 @@
 # EPOCH: 5 - DAG ORCHESTRATION
 # STATUS: Core model - Node runtime state
 # PURPOSE: Track state of each node within a job execution
-# LAST_REVIEWED: 28 JAN 2026
+# LAST_REVIEWED: 02 FEB 2026
 # EXPORTS: NodeState
 # DEPENDENCIES: pydantic
 # ============================================================================
@@ -90,6 +90,13 @@ class NodeState(NodeData):
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
     updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+    # Optimistic locking
+    version: int = Field(
+        default=1,
+        ge=1,
+        description="Version for optimistic locking - incremented on each update"
+    )
 
     # For fan-out: track parent node and index
     parent_node_id: Optional[str] = Field(

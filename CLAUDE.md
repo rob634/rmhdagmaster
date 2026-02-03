@@ -34,6 +34,8 @@ For architecture details, see `docs/ARCHITECTURE.md`. For deployment, see `docs/
 
 8. **Observable by default** — Every state transition logs a JobEvent.
 
+9. **Defensive concurrency** — PostgreSQL advisory locks prevent multi-instance conflicts. Optimistic locking (version columns) detects concurrent modifications. See `ADVANCED.md` Section 12.
+
 ---
 
 ## Code Patterns

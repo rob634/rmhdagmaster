@@ -34,6 +34,7 @@ GitHub Push → CI/CD Build → ACR Image → Multiple Azure Web Apps
 | 0: Project Setup | ✅ DONE | Repo created, models defined, schema generator built |
 | **0.5: Repository Refactor** | ✅ DONE | Async base class, connection pooling, auto-Json |
 | **0.7: Critical Fixes (P0)** | ✅ DONE | Event logging, retry logic, stale state bug |
+| **0.8: Concurrency Control** | 🔄 IN PROGRESS | Advisory locks, optimistic locking, version columns |
 | 1: Core Engine | 🔄 IN PROGRESS | Database schema, workflow loader, evaluator |
 | 2: Worker Integration | ⏳ TODO | Workers report to orchestrator |
 | 3: Real Workflows | ⏳ TODO | Port raster/vector workflows |
@@ -126,7 +127,111 @@ node_states = await node_repo.get_all_for_job(job_id)  # Snapshot
 
 ---
 
-## Phase 0.8: Stability (P1)
+## Phase 0.8: Concurrency Control (P1.5) 🔒 FOUNDATIONAL
+
+**Design Reference**: See `ADVANCED.md` Section 12 for detailed implementation specs.
+
+**Philosophy**: Even with a single orchestrator, defensive locking prevents bugs from accidental multi-instance deployment and prepares for future horizontal scaling.
+
+### Locking Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│ Layer 1: ORCHESTRATOR LOCK                                       │
+│ pg_advisory_lock('rmhdag:orchestrator')                         │
+│ → Only one orchestrator instance runs                           │
+├─────────────────────────────────────────────────────────────────┤
+│ Layer 2: JOB LOCKS                                              │
+│ pg_try_advisory_xact_lock('rmhdag:job:{job_id}')               │
+│ → Jobs can be safely processed in parallel (future scaling)     │
+├─────────────────────────────────────────────────────────────────┤
+│ Layer 3: OPTIMISTIC LOCKING                                     │
+│ WHERE version = %(expected_version)s                            │
+│ → Detect concurrent modifications, retry on conflict            │
+├─────────────────────────────────────────────────────────────────┤
+│ Layer 4: IDEMPOTENT TRANSITIONS (already implemented)           │
+│ WHERE status = 'ready' (conditional updates)                    │
+│ → State transitions are safe to retry                           │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Why PostgreSQL Advisory Locks?
+
+- **Zero external dependencies** (no Redis, etcd, Zookeeper)
+- **Auto-release on crash/disconnect** (no manual cleanup)
+- **Fast** (in-memory, no table writes)
+- **Supports try-lock** (non-blocking, skip if busy)
+- **Already have Postgres** (no new infrastructure)
+
+### Implementation Tasks
+
+| ID | Task | Status | File | Layer |
+|----|------|--------|------|-------|
+| **L1.1** | Create LockService class | ✅ DONE | `infrastructure/locking.py` | 1,2 |
+| **L1.2** | Implement orchestrator lock (session-level) | ✅ DONE | `infrastructure/locking.py` | 1 |
+| **L1.3** | Implement job lock context manager | ✅ DONE | `infrastructure/locking.py` | 2 |
+| **L1.4** | Update Orchestrator.start() to acquire lock | ✅ DONE | `orchestrator/loop.py` | 1 |
+| **L1.5** | Update Orchestrator.stop() to release lock | ✅ DONE | `orchestrator/loop.py` | 1 |
+| **L1.6** | Update _process_job() to use job lock | ✅ DONE | `orchestrator/loop.py` | 2 |
+| **L2.1** | Add version column to dag_node_states | ✅ DONE | `core/models/node.py` | 3 |
+| **L2.2** | Add migration for version column | ✅ DONE | `api/bootstrap_routes.py` | 3 |
+| **L2.3** | Update NodeRepository.update() with version check | ✅ DONE | `repositories/node_repo.py` | 3 |
+| **L2.4** | Handle version conflicts in NodeService | ✅ DONE | `services/node_service.py` | 3 |
+| **L3.1** | Add version column to dag_jobs | ✅ DONE | `core/models/job.py` | 3 |
+| **L3.2** | Update JobRepository.update_status() with version | ⏳ TODO | `repositories/job_repo.py` | 3 |
+
+### Lock Placement Decision
+
+| Lock Type | Location | Rationale |
+|-----------|----------|-----------|
+| Orchestrator lock | **Infrastructure** (`LockService`) | Global singleton, infrastructure concern |
+| Job lock | **Infrastructure** (`LockService`) | Called from orchestrator loop |
+| Version checking | **Repository** layer | Data integrity at storage boundary |
+| Conflict handling | **Service** layer | Business logic decides retry vs fail |
+
+**Why this placement?**
+
+1. **LockService in Infrastructure**: Locking is an infrastructure concern like database access. It's not business logic—it's coordination mechanism. Lives alongside `AsyncPostgreSQLRepository`.
+
+2. **Version Check in Repository**: The repository is responsible for data integrity. When it writes to the database, it should ensure the write is valid. Version checking at this layer prevents any caller (service, orchestrator) from accidentally corrupting state.
+
+3. **Conflict Handling in Service**: When a version conflict occurs, the business logic layer decides what to do. Some operations should retry, others should log and move on. The service has the context to make this decision.
+
+### Usage Patterns
+
+**Orchestrator startup**:
+```python
+# orchestrator/loop.py
+async def start(self):
+    if not await self.lock_service.try_acquire_orchestrator_lock():
+        raise RuntimeError("Another orchestrator instance is running")
+    # ... continue startup
+```
+
+**Job processing**:
+```python
+# orchestrator/loop.py
+async def _process_job(self, job: Job):
+    async with self.lock_service.job_lock(job.job_id) as acquired:
+        if not acquired:
+            return  # Skip, locked by another process
+        await self._process_job_internal(job)
+```
+
+**Node update with version**:
+```python
+# repositories/node_repo.py
+async def update(self, node: NodeState) -> bool:
+    result = await conn.execute(
+        "UPDATE ... SET version = version + 1 WHERE version = %(version)s",
+        {..., "version": node.version}
+    )
+    return result.rowcount > 0  # False = version conflict
+```
+
+---
+
+## Phase 0.85: Stability (P1)
 
 | ID | Feature | Effort | Impact | Status |
 |----|---------|--------|--------|--------|
@@ -268,27 +373,34 @@ Phase A: Foundation ✅ COMPLETE
 3. P0.2 Retry Logic             ✅ DONE
 4. P0.3 Orchestrator Stats      ✅ DONE
 
+Phase A.5: Concurrency Control 🔒 RECOMMENDED NEXT
+──────────────────────────────────────────────────
+5. L1.* Orchestrator + Job Locks  ← Prevent multi-instance bugs
+6. L2.* Version columns           ← Optimistic locking
+7. L3.* Conflict handling         ← Graceful retry on conflict
+
 Phase B: Advanced DAG Patterns 🎯 CURRENT
 ─────────────────────────────────────────
-5. P2.1 Conditional Routing ← Size-based routing, branch skipping
-6. P2.2 Fan-Out             ← Dynamic parallel task creation
-7. P2.3 Fan-In              ← Aggregate parallel results
-8. P2.4 Checkpointing       ← Resume long-running tasks
+8.  P2.1 Conditional Routing ← Size-based routing, branch skipping
+9.  P2.2 Fan-Out             ← Dynamic parallel task creation
+10. P2.3 Fan-In              ← Aggregate parallel results
+11. P2.4 Checkpointing       ← Resume long-running tasks
 
 Phase C: Stability
 ──────────────────
-9.  P1.1 Workflow Version Pinning ← Safe deployments
-10. P1.2 Transaction Wrapping     ← Data integrity
+12. P1.1 Workflow Version Pinning ← Safe deployments
+13. P1.2 Transaction Wrapping     ← Data integrity
 
 Phase D: Observability
 ──────────────────────
-11. P3.1 Progress API    ← User visibility (P3.2 Timeline done)
-12. P3.3 Metrics         ← Operations dashboard
+14. P3.1 Progress API    ← User visibility (P3.2 Timeline done)
+15. P3.3 Metrics         ← Operations dashboard
 
 Future: Aspirational
 ────────────────────
 - Nested Sub-Workflows   ← Workflow composition
 - Human Approval Gates   ← Manual intervention points
+- Horizontal Scaling     ← Multiple orchestrators (locks enable this)
 ```
 
 **See**:

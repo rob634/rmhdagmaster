@@ -4,7 +4,7 @@
 # EPOCH: 5 - DAG ORCHESTRATION
 # STATUS: Core model - Job instance (workflow execution)
 # PURPOSE: Track one execution of a workflow
-# LAST_REVIEWED: 28 JAN 2026
+# LAST_REVIEWED: 02 FEB 2026
 # EXPORTS: Job
 # DEPENDENCIES: pydantic
 # ============================================================================
@@ -92,6 +92,13 @@ class Job(JobData):
         description="When job reached terminal state"
     )
     updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+    # Optimistic locking
+    version: int = Field(
+        default=1,
+        ge=1,
+        description="Version for optimistic locking - incremented on each update"
+    )
 
     # Tracking (for debugging/correlation)
     submitted_by: Optional[str] = Field(

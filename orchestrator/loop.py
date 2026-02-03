@@ -31,6 +31,7 @@ from core.models import Job, NodeState, TaskResult, WorkflowDefinition
 from core.contracts import JobStatus, NodeStatus
 from services import JobService, NodeService, WorkflowService, EventService
 from messaging import TaskPublisher, get_publisher
+from infrastructure.locking import LockService
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +71,10 @@ class Orchestrator:
         self.job_service = JobService(pool, workflow_service, event_service)
         self.node_service = NodeService(pool, workflow_service, event_service)
 
+        # Locking service for concurrency control
+        self.lock_service = LockService(pool)
+        self._has_orchestrator_lock = False
+
         self._running = False
         self._task: Optional[asyncio.Task] = None
         self._publisher: Optional[TaskPublisher] = None
@@ -84,19 +89,38 @@ class Orchestrator:
         self._active_jobs_count = 0
 
     async def start(self) -> None:
-        """Start the orchestration loop."""
+        """
+        Start the orchestration loop.
+
+        Acquires the orchestrator lock first to ensure only one
+        orchestrator instance runs at a time. Raises RuntimeError
+        if another orchestrator holds the lock.
+        """
         if self._running:
             logger.warning("Orchestrator already running")
             return
+
+        # Acquire orchestrator lock first (Layer 1: single orchestrator)
+        self._has_orchestrator_lock = await self.lock_service.try_acquire_orchestrator_lock()
+        if not self._has_orchestrator_lock:
+            raise RuntimeError(
+                "Cannot start orchestrator: another instance is already running. "
+                "Check for duplicate deployments or stale processes."
+            )
 
         self._running = True
         self._started_at = datetime.utcnow()
         self._publisher = await get_publisher()
         self._task = asyncio.create_task(self._run_loop())
-        logger.info("Orchestrator started")
+        logger.info("Orchestrator started with exclusive lock")
 
     async def stop(self) -> None:
-        """Stop the orchestration loop."""
+        """
+        Stop the orchestration loop.
+
+        Releases the orchestrator lock on shutdown. The lock also
+        auto-releases if the connection closes unexpectedly.
+        """
         self._running = False
 
         if self._task:
@@ -107,8 +131,13 @@ class Orchestrator:
                 pass
             self._task = None
 
+        # Release orchestrator lock (Layer 1)
+        if self._has_orchestrator_lock:
+            await self.lock_service.release_orchestrator_lock()
+            self._has_orchestrator_lock = False
+
         logger.info(
-            f"Orchestrator stopped. "
+            f"Orchestrator stopped, lock released. "
             f"Cycles: {self._cycles}, "
             f"Tasks dispatched: {self._tasks_dispatched}, "
             f"Results processed: {self._results_processed}"
@@ -194,7 +223,26 @@ class Orchestrator:
 
     async def _process_job(self, job: Job) -> None:
         """
-        Process a single active job.
+        Process a single active job with job-level locking.
+
+        Uses Layer 2 job lock to ensure only one process handles
+        this job at a time. Non-blocking: if job is locked, skip it.
+
+        Args:
+            job: Job to process
+        """
+        # Acquire job-specific lock (Layer 2: per-job coordination)
+        async with self.lock_service.job_lock(job.job_id, blocking=False) as acquired:
+            if not acquired:
+                # Another process is handling this job, skip
+                logger.debug(f"Skipping job {job.job_id} - locked by another process")
+                return
+
+            await self._process_job_internal(job)
+
+    async def _process_job_internal(self, job: Job) -> None:
+        """
+        Internal job processing (assumes job lock is held).
 
         Args:
             job: Job to process
@@ -252,9 +300,16 @@ class Orchestrator:
             node.mark_completed({})
             from repositories import NodeRepository
             node_repo = NodeRepository(self.pool)
-            await node_repo.update(node)
-            logger.debug(f"Auto-completed {node_def.type.value} node: {node.node_id}")
-            return True
+            success = await node_repo.update(node)
+            if success:
+                logger.debug(f"Auto-completed {node_def.type.value} node: {node.node_id}")
+            else:
+                # Version conflict on auto-complete is unexpected but not fatal
+                logger.warning(
+                    f"Version conflict auto-completing {node_def.type.value} node "
+                    f"{node.node_id}, will retry"
+                )
+            return success
 
         # Create task message
         task_message = self._publisher.create_task_message(
@@ -365,6 +420,7 @@ class Orchestrator:
 
         return {
             "running": self._running,
+            "has_orchestrator_lock": self._has_orchestrator_lock,
             "started_at": self._started_at.isoformat() if self._started_at else None,
             "uptime_seconds": uptime_seconds,
             "poll_interval": self.poll_interval,
