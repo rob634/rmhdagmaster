@@ -129,8 +129,11 @@ class LockService:
                 (lock_id,),
             )
             row = await result.fetchone()
-            # Access by column name - compatible with dict_row or tuple
-            acquired = row["acquired"] if row else False
+            # Handle both dict_row and tuple row factories
+            if row:
+                acquired = row["acquired"] if hasattr(row, 'keys') else row[0]
+            else:
+                acquired = False
 
             if acquired:
                 logger.info(
@@ -230,8 +233,11 @@ class LockService:
                     (lock_id,),
                 )
                 row = await result.fetchone()
-                # Access by column name - compatible with dict_row or tuple
-                acquired = row["acquired"] if row else False
+                # Handle both dict_row and tuple row factories
+                if row:
+                    acquired = row["acquired"] if hasattr(row, 'keys') else row[0]
+                else:
+                    acquired = False
 
                 if acquired:
                     logger.debug(f"Acquired lock for job {job_id}")
@@ -270,8 +276,11 @@ class LockService:
                 (lock_id,),
             )
             row = await result.fetchone()
-            # Access by column name - compatible with dict_row or tuple
-            acquired = row["acquired"] if row else False
+            # Handle both dict_row and tuple row factories
+            if row:
+                acquired = row["acquired"] if hasattr(row, 'keys') else row[0]
+            else:
+                acquired = False
 
             if acquired:
                 # We got it, so it wasn't locked - release immediately
