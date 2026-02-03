@@ -25,6 +25,7 @@ from .job_repo import JobRepository
 from .node_repo import NodeRepository
 from .task_repo import TaskResultRepository
 from .event_repo import EventRepository
+from .checkpoint_repo import CheckpointRepository
 
 __all__ = [
     "get_pool",
@@ -33,4 +34,5 @@ __all__ = [
     "NodeRepository",
     "TaskResultRepository",
     "EventRepository",
+    "CheckpointRepository",
 ]

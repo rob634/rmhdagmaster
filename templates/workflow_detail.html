@@ -1,0 +1,227 @@
+{% extends "base.html" %}
+{% from "partials/status_badge.html" import badge %}
+
+{% block title %}{{ workflow.name }} - DAG Orchestrator{% endblock %}
+
+{% block page_title %}Workflow Details{% endblock %}
+
+{% block content %}
+<!-- Workflow Header -->
+<div class="job-header">
+    <div>
+        <h1 class="job-title">
+            <code>{{ workflow.workflow_id }}</code>
+        </h1>
+        <div class="job-meta">
+            <span class="job-meta-item">
+                <i data-feather="tag"></i>
+                {{ workflow.name }}
+            </span>
+            <span class="job-meta-item">
+                <i data-feather="git-branch"></i>
+                {{ workflow.nodes | length }} nodes
+            </span>
+            <span class="job-meta-item">
+                <i data-feather="layers"></i>
+                v{{ workflow.version }}
+            </span>
+        </div>
+    </div>
+    <div style="display: flex; gap: 12px; align-items: flex-start;">
+        <span class="badge badge-success badge-lg">Active</span>
+    </div>
+</div>
+
+<!-- Description -->
+{% if workflow.description %}
+<div class="card mb-4">
+    <div class="card-body">
+        <p style="margin: 0; color: var(--color-text-muted);">{{ workflow.description }}</p>
+    </div>
+</div>
+{% endif %}
+
+<!-- DAG Visualization (Simple) -->
+<div class="card mb-4">
+    <div class="card-header">
+        <h3 class="card-title">Workflow Flow</h3>
+    </div>
+    <div class="card-body">
+        <div class="dag-flow">
+            {% for node_id, node in workflow.nodes.items() %}
+            <div class="dag-flow-node {{ node.type.value }}">
+                <div class="dag-flow-node-icon">
+                    {% if node.type.value == 'start' %}
+                        <i data-feather="play"></i>
+                    {% elif node.type.value == 'end' %}
+                        <i data-feather="stop-circle"></i>
+                    {% elif node.type.value == 'task' %}
+                        <i data-feather="cpu"></i>
+                    {% elif node.type.value == 'conditional' %}
+                        <i data-feather="git-branch"></i>
+                    {% elif node.type.value == 'fan_out' %}
+                        <i data-feather="share-2"></i>
+                    {% elif node.type.value == 'fan_in' %}
+                        <i data-feather="git-merge"></i>
+                    {% else %}
+                        <i data-feather="circle"></i>
+                    {% endif %}
+                </div>
+                <div class="dag-flow-node-label">{{ node_id }}</div>
+                {% if node.next %}
+                <div class="dag-flow-arrow">
+                    <i data-feather="arrow-right"></i>
+                </div>
+                {% endif %}
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+</div>
+
+<!-- Input Parameters -->
+{% if workflow.inputs %}
+<div class="card mb-4">
+    <div class="card-header">
+        <h3 class="card-title">Input Parameters</h3>
+    </div>
+    <div class="card-body">
+        <div class="table-container">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Parameter</th>
+                        <th>Type</th>
+                        <th>Required</th>
+                        <th>Default</th>
+                        <th>Description</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for param_name, param in workflow.inputs.items() %}
+                    <tr>
+                        <td><code>{{ param_name }}</code></td>
+                        <td>
+                            <span class="badge badge-secondary">{{ param.type }}</span>
+                        </td>
+                        <td>
+                            {% if param.required %}
+                                <span class="text-danger">Required</span>
+                            {% else %}
+                                <span class="text-muted">Optional</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if param.default is not none %}
+                                <code>{{ param.default }}</code>
+                            {% else %}
+                                <span class="text-muted">-</span>
+                            {% endif %}
+                        </td>
+                        <td class="text-muted">{{ param.description | default('-') }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endif %}
+
+<!-- Node Definitions -->
+<div class="card">
+    <div class="card-header">
+        <h3 class="card-title">Node Definitions</h3>
+    </div>
+    <div class="card-body">
+        <div class="node-list">
+            {% for node_id, node in workflow.nodes.items() %}
+            <div class="node-item">
+                <div class="node-status {{ node.type.value }}">
+                    {% if node.type.value == 'start' %}
+                        <i data-feather="play"></i>
+                    {% elif node.type.value == 'end' %}
+                        <i data-feather="stop-circle"></i>
+                    {% elif node.type.value == 'task' %}
+                        <i data-feather="cpu"></i>
+                    {% elif node.type.value == 'conditional' %}
+                        <i data-feather="git-branch"></i>
+                    {% elif node.type.value == 'fan_out' %}
+                        <i data-feather="share-2"></i>
+                    {% elif node.type.value == 'fan_in' %}
+                        <i data-feather="git-merge"></i>
+                    {% else %}
+                        <i data-feather="circle"></i>
+                    {% endif %}
+                </div>
+                <div class="node-info">
+                    <div class="node-name">{{ node_id }}</div>
+                    <div class="node-handler">
+                        Type: <code>{{ node.type.value }}</code>
+                        {% if node.handler %}
+                            | Handler: <code>{{ node.handler }}</code>
+                        {% endif %}
+                        {% if node.queue %}
+                            | Queue: <code>{{ node.queue }}</code>
+                        {% endif %}
+                    </div>
+                    {% if node.description %}
+                    <div class="node-handler text-muted" style="margin-top: 4px;">
+                        {{ node.description }}
+                    </div>
+                    {% endif %}
+                </div>
+                <div style="display: flex; align-items: center; gap: 16px;">
+                    <span class="badge badge-{{ 'primary' if node.type.value == 'task' else 'secondary' }}">
+                        {{ node.type.value | upper }}
+                    </span>
+                    {% if node.next %}
+                    <div class="node-timing">
+                        <i data-feather="arrow-right" style="width: 14px; height: 14px;"></i>
+                        {{ node.next if node.next is string else node.next | join(', ') }}
+                    </div>
+                    {% endif %}
+                </div>
+            </div>
+
+            <!-- Node Details (expandable) -->
+            {% if node.type.value == 'task' and (node.params or node.retry or node.timeout_seconds) %}
+            <div style="margin-left: 56px; margin-top: -8px; margin-bottom: 12px;">
+                <details>
+                    <summary style="cursor: pointer; color: var(--color-text-muted); font-size: 13px;">
+                        View Configuration
+                    </summary>
+                    <div style="background: var(--color-bg-tertiary); padding: 12px; border-radius: var(--border-radius); margin-top: 8px; font-size: 12px;">
+                        {% if node.timeout_seconds %}
+                        <div style="margin-bottom: 8px;">
+                            <strong>Timeout:</strong> {{ node.timeout_seconds }}s
+                        </div>
+                        {% endif %}
+                        {% if node.retry %}
+                        <div style="margin-bottom: 8px;">
+                            <strong>Retry:</strong> {{ node.retry.max_attempts }} attempts, {{ node.retry.backoff }} backoff
+                        </div>
+                        {% endif %}
+                        {% if node.params %}
+                        <div>
+                            <strong>Parameters:</strong>
+                            <pre style="margin: 8px 0 0 0; white-space: pre-wrap;">{{ node.params | tojson(indent=2) }}</pre>
+                        </div>
+                        {% endif %}
+                    </div>
+                </details>
+            </div>
+            {% endif %}
+            {% endfor %}
+        </div>
+    </div>
+</div>
+
+<!-- Back Link -->
+<div class="mt-4">
+    <a href="/ui/workflows" class="btn btn-secondary">
+        <i data-feather="arrow-left"></i>
+        Back to Workflows
+    </a>
+</div>
+{% endblock %}

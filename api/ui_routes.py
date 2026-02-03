@@ -2,16 +2,20 @@
 UI Routes - Jinja2 template rendering for dashboard.
 """
 import logging
+import os
 from datetime import datetime, timezone
 from typing import Optional
 
+import httpx
 import psutil
 from fastapi import APIRouter, Request, Query
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
+from __version__ import __version__, BUILD_DATE, EPOCH
 from ui.terminology import Terminology
 from core.contracts import JobStatus, NodeStatus
+from core.models.events import EventType, EventStatus
 
 logger = logging.getLogger(__name__)
 
@@ -38,17 +42,19 @@ TERMS = Terminology(
 _job_service = None
 _node_service = None
 _workflow_service = None
+_event_service = None
 _orchestrator = None
 _pool = None
 _start_time = datetime.now(timezone.utc)
 
 
-def set_ui_services(job_service, node_service, workflow_service, orchestrator, pool):
+def set_ui_services(job_service, node_service, workflow_service, orchestrator, pool, event_service=None):
     """Set service instances for UI routes."""
-    global _job_service, _node_service, _workflow_service, _orchestrator, _pool
+    global _job_service, _node_service, _workflow_service, _event_service, _orchestrator, _pool
     _job_service = job_service
     _node_service = node_service
     _workflow_service = workflow_service
+    _event_service = event_service
     _orchestrator = orchestrator
     _pool = pool
 
@@ -188,6 +194,39 @@ async def health_page(request: Request):
     except Exception:
         pass
 
+    # Worker health check
+    worker_url = os.environ.get(
+        "WORKER_HEALTH_URL",
+        "https://rmhdagworker-fedshwfme6drd6gq.eastus-01.azurewebsites.net"
+    )
+    worker_healthy = False
+    worker_status = "Unknown"
+    worker_latency = None
+    worker_version = None
+    worker_queue = None
+
+    try:
+        import time
+        start = time.time()
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(f"{worker_url}/health")
+            worker_latency = int((time.time() - start) * 1000)
+            if resp.status_code == 200:
+                worker_healthy = True
+                worker_status = "Healthy"
+                data = resp.json()
+                worker_version = data.get("version", "-")
+                worker_queue = data.get("queue", data.get("worker_queue", "-"))
+            else:
+                worker_status = f"Unhealthy ({resp.status_code})"
+    except httpx.ConnectError:
+        worker_status = "Connection Failed"
+    except httpx.TimeoutException:
+        worker_status = "Timeout"
+    except Exception as e:
+        worker_status = f"Error: {str(e)[:30]}"
+        logger.warning(f"Worker health check failed: {e}")
+
     # System resources
     memory = psutil.virtual_memory()
     cpu = psutil.cpu_percent(interval=0.1)
@@ -214,11 +253,21 @@ async def health_page(request: Request):
             "messages_sent": orch_stats.get("tasks_dispatched", 0),
             "send_errors": 0,
         },
+        "worker": {
+            "healthy": worker_healthy,
+            "status": worker_status,
+            "url": worker_url,
+            "latency_ms": worker_latency if worker_latency else "-",
+            "version": worker_version if worker_version else "-",
+            "queue": worker_queue if worker_queue else "-",
+        },
         "system": {
             "memory_percent": round(memory.percent, 1),
             "cpu_percent": round(cpu, 1),
             "uptime": format_uptime(_start_time),
-            "version": "0.1.0",
+            "version": __version__,
+            "build_date": BUILD_DATE,
+            "epoch": EPOCH,
         },
         "workflows": [],
     }
@@ -287,10 +336,8 @@ async def jobs_list(
                 except ValueError:
                     job_list = []
             else:
-                # Get all active jobs, then completed
-                job_list = await _job_service.list_active_jobs(limit=per_page * page) if _job_service else []
-                if not job_list:
-                    job_list = await job_repo.list_by_status(JobStatus.COMPLETED, limit=per_page * page)
+                # Get all recent jobs regardless of status
+                job_list = await job_repo.list_recent(limit=per_page * page)
 
             # Apply workflow filter
             if workflow_id:
@@ -428,34 +475,193 @@ async def job_detail(request: Request, job_id: str):
     return templates.TemplateResponse("job_detail.html", context)
 
 
+@router.get("/jobs/{job_id}/timeline", response_class=HTMLResponse)
+async def job_timeline(
+    request: Request,
+    job_id: str,
+    event_type: Optional[str] = Query(None),
+    status: Optional[str] = Query(None),
+    node_id: Optional[str] = Query(None),
+):
+    """Render the job timeline page."""
+    context = get_base_context(request, "jobs")
+
+    # Filters
+    context["filters"] = {
+        "event_type": event_type or "",
+        "status": status or "",
+        "node_id": node_id or "",
+    }
+
+    job_data = {
+        "job_id": job_id,
+        "workflow_id": "unknown",
+        "status": "pending",
+        "created_at": "-",
+    }
+    events = []
+    node_ids = set()
+    stats = {"total": 0, "success": 0, "warning": 0, "failure": 0, "info": 0}
+
+    if _pool and _event_service:
+        try:
+            # Get job info
+            job = await _job_service.get_job(job_id) if _job_service else None
+            if job:
+                job_data = {
+                    "job_id": job.job_id,
+                    "workflow_id": job.workflow_id,
+                    "status": job.status.value,
+                    "created_at": job.created_at.strftime("%Y-%m-%d %H:%M:%S") if job.created_at else "-",
+                }
+
+            # Get all events for this job
+            all_events = await _event_service.get_job_timeline(job_id, limit=500)
+
+            # Collect node_ids for filter dropdown
+            for event in all_events:
+                if event.node_id:
+                    node_ids.add(event.node_id)
+
+            # Calculate stats from all events
+            for event in all_events:
+                stats["total"] += 1
+                if event.event_status == EventStatus.SUCCESS:
+                    stats["success"] += 1
+                elif event.event_status == EventStatus.WARNING:
+                    stats["warning"] += 1
+                elif event.event_status == EventStatus.FAILURE:
+                    stats["failure"] += 1
+                else:
+                    stats["info"] += 1
+
+            # Apply filters
+            filtered_events = all_events
+            if event_type:
+                try:
+                    et = EventType(event_type)
+                    filtered_events = [e for e in filtered_events if e.event_type == et]
+                except ValueError:
+                    pass
+            if status:
+                try:
+                    es = EventStatus(status)
+                    filtered_events = [e for e in filtered_events if e.event_status == es]
+                except ValueError:
+                    pass
+            if node_id:
+                filtered_events = [e for e in filtered_events if e.node_id == node_id]
+
+            events = filtered_events
+
+        except Exception as e:
+            logger.warning(f"Error fetching timeline for job {job_id}: {e}")
+
+    context["job"] = job_data
+    context["events"] = events
+    context["node_ids"] = sorted(node_ids)
+    context["stats"] = stats
+
+    return templates.TemplateResponse("timeline.html", context)
+
+
 @router.get("/workflows", response_class=HTMLResponse)
 async def workflows_list(request: Request):
     """Render the workflows listing page."""
     context = get_base_context(request, "workflows")
 
     workflows = []
+    workflows_dir = "./workflows/"
     if _workflow_service:
         try:
-            wf_list = _workflow_service.list_all()
-            workflows = [
-                {
-                    "id": wf.workflow_id,
-                    "name": wf.name,
-                    "description": wf.description,
-                    "node_count": len(wf.nodes),
-                    "version": wf.version,
-                }
-                for wf in wf_list
-            ]
-        except Exception:
-            pass
+            workflows = _workflow_service.list_all()
+            workflows_dir = str(_workflow_service.workflows_dir)
+        except Exception as e:
+            logger.warning(f"Error fetching workflows: {e}")
 
     context["workflows"] = workflows
-    return templates.TemplateResponse("dashboard.html", context)
+    context["workflows_dir"] = workflows_dir
+    return templates.TemplateResponse("workflows.html", context)
+
+
+@router.get("/workflows/{workflow_id}", response_class=HTMLResponse)
+async def workflow_detail(request: Request, workflow_id: str):
+    """Render the workflow detail page."""
+    context = get_base_context(request, "workflows")
+
+    workflow = None
+    if _workflow_service:
+        try:
+            workflow = _workflow_service.get(workflow_id)
+        except Exception as e:
+            logger.warning(f"Error fetching workflow {workflow_id}: {e}")
+
+    if workflow is None:
+        # Return 404-style page
+        context["error"] = f"Workflow not found: {workflow_id}"
+        return templates.TemplateResponse("workflows.html", context)
+
+    context["workflow"] = workflow
+    return templates.TemplateResponse("workflow_detail.html", context)
 
 
 @router.get("/nodes", response_class=HTMLResponse)
-async def nodes_monitor(request: Request):
+async def nodes_monitor(
+    request: Request,
+    status: Optional[str] = Query(None),
+    show: str = Query("all"),
+):
     """Render the nodes monitoring page."""
     context = get_base_context(request, "nodes")
-    return templates.TemplateResponse("dashboard.html", context)
+
+    # Filters
+    context["filters"] = {
+        "status": status or "",
+        "show": show,
+    }
+
+    nodes = []
+    stats = {
+        "total": 0,
+        "running": 0,
+        "pending": 0,
+        "failed": 0,
+    }
+
+    if _pool:
+        try:
+            from repositories import NodeRepository
+            node_repo = NodeRepository(_pool)
+
+            # Get status counts
+            status_counts = await node_repo.get_status_counts()
+            stats["total"] = sum(status_counts.values())
+            stats["running"] = status_counts.get("running", 0) + status_counts.get("dispatched", 0)
+            stats["pending"] = status_counts.get("pending", 0) + status_counts.get("ready", 0)
+            stats["failed"] = status_counts.get("failed", 0)
+
+            # Get nodes based on filters
+            if show == "active":
+                nodes = await node_repo.list_active(limit=100)
+            elif status:
+                try:
+                    status_enum = NodeStatus(status)
+                    nodes = await node_repo.list_by_status(status_enum, limit=100)
+                except ValueError:
+                    nodes = []
+            else:
+                nodes = await node_repo.list_by_status(limit=100)
+
+            # Enrich with handler info from workflow
+            if _workflow_service:
+                for node in nodes:
+                    # Try to get handler from workflow
+                    # First we need job info to get workflow_id
+                    pass  # Handler lookup would require job->workflow mapping
+
+        except Exception as e:
+            logger.warning(f"Error fetching nodes: {e}")
+
+    context["nodes"] = nodes
+    context["stats"] = stats
+    return templates.TemplateResponse("nodes.html", context)

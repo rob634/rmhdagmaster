@@ -1,0 +1,191 @@
+{% extends "base.html" %}
+{% from "partials/status_badge.html" import badge %}
+
+{% block title %}Nodes - DAG Orchestrator{% endblock %}
+
+{% block page_title %}Node Monitor{% endblock %}
+
+{% block content %}
+<!-- Stats Grid -->
+<div class="stats-grid">
+    <div class="stat-card">
+        <div class="stat-card-header">
+            <span class="stat-label">Total Nodes</span>
+            <div class="stat-icon">
+                <i data-feather="circle"></i>
+            </div>
+        </div>
+        <div class="stat-value">{{ stats.total | default(0) }}</div>
+        <div class="stat-change">All jobs</div>
+    </div>
+
+    <div class="stat-card">
+        <div class="stat-card-header">
+            <span class="stat-label">Running</span>
+            <div class="stat-icon">
+                <i data-feather="play-circle"></i>
+            </div>
+        </div>
+        <div class="stat-value text-info">{{ stats.running | default(0) }}</div>
+        <div class="stat-change">Active now</div>
+    </div>
+
+    <div class="stat-card">
+        <div class="stat-card-header">
+            <span class="stat-label">Pending</span>
+            <div class="stat-icon">
+                <i data-feather="clock"></i>
+            </div>
+        </div>
+        <div class="stat-value text-warning">{{ stats.pending | default(0) }}</div>
+        <div class="stat-change">Waiting</div>
+    </div>
+
+    <div class="stat-card">
+        <div class="stat-card-header">
+            <span class="stat-label">Failed</span>
+            <div class="stat-icon">
+                <i data-feather="x-circle"></i>
+            </div>
+        </div>
+        <div class="stat-value text-danger">{{ stats.failed | default(0) }}</div>
+        <div class="stat-change">Errors</div>
+    </div>
+</div>
+
+<!-- Filters -->
+<div class="card mb-4">
+    <div class="card-body">
+        <form method="GET" action="/ui/nodes" style="display: flex; gap: 16px; align-items: center; flex-wrap: wrap;">
+            <div>
+                <label class="text-muted" style="font-size: 12px; display: block; margin-bottom: 4px;">Status</label>
+                <select name="status" class="btn btn-secondary" onchange="this.form.submit()">
+                    <option value="">All Statuses</option>
+                    <option value="pending" {{ 'selected' if filters.status == 'pending' }}>Pending</option>
+                    <option value="ready" {{ 'selected' if filters.status == 'ready' }}>Ready</option>
+                    <option value="dispatched" {{ 'selected' if filters.status == 'dispatched' }}>Dispatched</option>
+                    <option value="running" {{ 'selected' if filters.status == 'running' }}>Running</option>
+                    <option value="completed" {{ 'selected' if filters.status == 'completed' }}>Completed</option>
+                    <option value="failed" {{ 'selected' if filters.status == 'failed' }}>Failed</option>
+                    <option value="skipped" {{ 'selected' if filters.status == 'skipped' }}>Skipped</option>
+                </select>
+            </div>
+            <div>
+                <label class="text-muted" style="font-size: 12px; display: block; margin-bottom: 4px;">Show</label>
+                <select name="show" class="btn btn-secondary" onchange="this.form.submit()">
+                    <option value="all" {{ 'selected' if filters.show == 'all' }}>All Nodes</option>
+                    <option value="active" {{ 'selected' if filters.show == 'active' }}>Active Only</option>
+                </select>
+            </div>
+            <div style="margin-left: auto;">
+                <label style="font-size: 12px; display: block; margin-bottom: 4px; visibility: hidden;">Actions</label>
+                <a href="/ui/nodes" class="btn btn-secondary">Reset Filters</a>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Nodes Table -->
+<div class="card">
+    <div class="card-header">
+        <h3 class="card-title">
+            Nodes
+            {% if nodes %}
+            <span class="text-muted" style="font-weight: normal; font-size: 14px;">
+                ({{ nodes | length }} shown)
+            </span>
+            {% endif %}
+        </h3>
+    </div>
+    <div class="card-body">
+        {% if nodes %}
+        <div class="table-container">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Node ID</th>
+                        <th>Job</th>
+                        <th>Status</th>
+                        <th>Handler</th>
+                        <th>Retries</th>
+                        <th>Updated</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for node in nodes %}
+                    <tr>
+                        <td>
+                            <strong>{{ node.node_id }}</strong>
+                        </td>
+                        <td>
+                            <a href="/ui/jobs/{{ node.job_id }}">
+                                <code>{{ node.job_id[:12] }}...</code>
+                            </a>
+                        </td>
+                        <td>{{ badge(node.status.value) }}</td>
+                        <td>
+                            {% if node.handler %}
+                                <code>{{ node.handler }}</code>
+                            {% else %}
+                                <span class="text-muted">-</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if node.retry_count > 0 %}
+                                <span class="text-warning">{{ node.retry_count }}/{{ node.max_retries }}</span>
+                            {% else %}
+                                <span class="text-muted">0</span>
+                            {% endif %}
+                        </td>
+                        <td class="text-muted">
+                            {{ node.updated_at.strftime('%H:%M:%S') if node.updated_at else '-' }}
+                        </td>
+                        <td>
+                            <a href="/ui/jobs/{{ node.job_id }}" class="btn btn-icon" title="View Job">
+                                <i data-feather="eye"></i>
+                            </a>
+                        </td>
+                    </tr>
+                    {% if node.error_message %}
+                    <tr>
+                        <td colspan="7" style="padding-top: 0; border-bottom: none;">
+                            <div style="background: rgba(239, 68, 68, 0.1); border: 1px solid rgba(239, 68, 68, 0.3); border-radius: var(--border-radius); padding: 8px 12px; margin-left: 20px;">
+                                <span class="text-danger" style="font-size: 12px;">Error: {{ node.error_message | truncate(100) }}</span>
+                            </div>
+                        </td>
+                    </tr>
+                    {% endif %}
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <div class="empty-state">
+            <i data-feather="circle"></i>
+            <div class="empty-state-title">No nodes found</div>
+            <div class="empty-state-description">
+                {% if filters.status or filters.show == 'active' %}
+                    No nodes match the current filters.
+                {% else %}
+                    Nodes will appear here once jobs are executed.
+                {% endif %}
+            </div>
+        </div>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    // Auto-refresh nodes page every 5 seconds if showing active nodes
+    {% if filters.show == 'active' or filters.status in ['running', 'dispatched', 'ready'] %}
+    setInterval(function() {
+        if (!document.hidden) {
+            location.reload();
+        }
+    }, 5000);
+    {% endif %}
+</script>
+{% endblock %}

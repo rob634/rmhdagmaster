@@ -34,7 +34,7 @@ GitHub Push → CI/CD Build → ACR Image → Multiple Azure Web Apps
 | 0: Project Setup | ✅ DONE | Repo created, models defined, schema generator built |
 | **0.5: Repository Refactor** | ✅ DONE | Async base class, connection pooling, auto-Json |
 | **0.7: Critical Fixes (P0)** | ✅ DONE | Event logging, retry logic, stale state bug |
-| **0.8: Concurrency Control** | 🔄 IN PROGRESS | Advisory locks, optimistic locking, version columns |
+| **0.8: Concurrency Control** | ✅ DONE | Advisory locks, optimistic locking, version columns |
 | 1: Core Engine | 🔄 IN PROGRESS | Database schema, workflow loader, evaluator |
 | 2: Worker Integration | ⏳ TODO | Workers report to orchestrator |
 | 3: Real Workflows | ⏳ TODO | Port raster/vector workflows |
@@ -178,7 +178,7 @@ node_states = await node_repo.get_all_for_job(job_id)  # Snapshot
 | **L2.3** | Update NodeRepository.update() with version check | ✅ DONE | `repositories/node_repo.py` | 3 |
 | **L2.4** | Handle version conflicts in NodeService | ✅ DONE | `services/node_service.py` | 3 |
 | **L3.1** | Add version column to dag_jobs | ✅ DONE | `core/models/job.py` | 3 |
-| **L3.2** | Update JobRepository.update_status() with version | ⏳ TODO | `repositories/job_repo.py` | 3 |
+| **L3.2** | Update JobRepository.update_status() with version | ✅ DONE | `repositories/job_repo.py` | 3 |
 
 ### Lock Placement Decision
 
@@ -297,38 +297,67 @@ async def update(self, node: NodeState) -> bool:
 
 **Design Reference**: See `PATTERNS.md` for detailed pattern documentation.
 
+**Rationale**: Conditional routing + checkpointing enable serious testable workflows.
+Fan-out/fan-in deferred until core patterns proven in production.
+
 | ID | Feature | Effort | Impact | Priority | Status |
 |----|---------|--------|--------|----------|--------|
-| **P2.1** | Conditional Routing | Medium | High | 1st | ⏳ TODO |
-| **P2.2** | Fan-Out | Large | High | 2nd | ⏳ TODO |
-| **P2.3** | Fan-In | Medium | High | 3rd | ⏳ TODO |
-| **P2.4** | Checkpointing | Medium | Medium | 4th | ⏳ TODO |
+| **P2.1** | Conditional Routing | Medium | High | 1st | ✅ DONE |
+| **P2.4** | Checkpointing | Medium | High | 2nd | ✅ DONE |
+| **P2.2** | Fan-Out | Large | High | Deferred | ⏳ TODO |
+| **P2.3** | Fan-In | Medium | High | Deferred | ⏳ TODO |
 
-### P2.1: Conditional Routing (Priority 1)
+### P2.1: Conditional Routing (Priority 1) ✅ COMPLETE
 
 **Use Case**: Size-based routing, skip validation, error branching.
 
 | Task | Status | File |
 |------|--------|------|
-| Implement evaluate_condition() | ⏳ TODO | `orchestrator/engine/evaluator.py` |
-| Implement _skip_branch() for untaken paths | ⏳ TODO | `services/node_service.py` |
-| Wire up conditional routing after node completion | ⏳ TODO | `orchestrator/loop.py` |
-| Handle SKIPPED status in dependency resolution | ⏳ TODO | `services/node_service.py` |
-| Add any_of support (only one branch runs) | ⏳ TODO | `services/node_service.py` |
+| Define conditional node schema in workflow YAML | ✅ DONE | `core/models/workflow.py` |
+| Implement evaluate_condition() | ✅ DONE | `orchestrator/engine/evaluator.py` |
+| Implement skip_branch() for untaken paths | ✅ DONE | `services/node_service.py` |
+| Wire up conditional routing after node completion | ✅ DONE | `orchestrator/loop.py` |
+| Handle SKIPPED status in dependency resolution | ✅ DONE | `services/node_service.py` |
+| Add any_of dependency support (merge after branches) | ✅ DONE | `services/node_service.py` |
+| Create test workflow with conditional | ⏳ TODO | `workflows/` |
 
-### P2.2: Fan-Out (Priority 2)
+### P2.4: Checkpointing (Priority 2) ✅ COMPLETE
+
+**Use Case**: Resume long-running tasks after failure/timeout/shutdown.
+
+| Task | Status | File |
+|------|--------|------|
+| Create Checkpoint model | ✅ DONE | `core/models/checkpoint.py` |
+| Add checkpoint_data to TaskMessage | ✅ DONE | `core/models/task.py` |
+| Add checkpoint_id to TaskResult | ✅ DONE | `core/models/task.py` |
+| Add checkpoint fields to NodeState | ✅ EXISTS | `core/models/node.py` |
+| Create CheckpointRepository | ✅ DONE | `repositories/checkpoint_repo.py` |
+| Create CheckpointService | ✅ DONE | `services/checkpoint_service.py` |
+| Pass checkpoint to handler on retry | ✅ DONE | `orchestrator/loop.py`, `messaging/publisher.py` |
+| Add checkpoint callback API endpoint | ✅ DONE | `api/routes.py` |
+| Add report_checkpoint to worker reporter | ✅ DONE | `worker/reporter.py` |
+| Update echo handler for checkpoint testing | ✅ DONE | `handlers/examples.py` |
+| Create checkpoint test workflow | ✅ DONE | `workflows/checkpoint_test.yaml` |
+
+**Note**: Full checkpointing flow is implemented. Handler registry already has checkpoint support via `HandlerResult.checkpoint_result()`. Worker executor handles checkpoint loading and saving. To test:
+1. Deploy schema: `POST /api/v1/bootstrap/deploy?confirm=yes` (creates `dag_checkpoints` table)
+2. Submit job: `POST /api/v1/jobs` with `workflow_id: checkpoint_test`, `input_params: {message: "test", steps: 5}`
+3. Interrupt worker mid-execution
+4. Restart worker - job should resume from last checkpoint
+
+### P2.2: Fan-Out (Deferred)
 
 **Use Case**: Tiled raster processing, chunked vector uploads, parallel analysis.
 
 | Task | Status | File |
 |------|--------|------|
-| Add parent_node_id, fan_out_index to NodeState | ⏳ TODO | `core/models/node.py` |
+| Add parent_node_id, fan_out_index to NodeState | ✅ EXISTS | `core/models/node.py` |
 | Create FanOutExpander class | ⏳ TODO | `orchestrator/engine/fan_out.py` |
 | Add fan_out context to templates | ⏳ TODO | `orchestrator/engine/templates.py` |
 | Wire up expansion after fan-out node completes | ⏳ TODO | `orchestrator/loop.py` |
 | Add get_by_parent() to NodeRepository | ⏳ TODO | `repositories/node_repo.py` |
 
-### P2.3: Fan-In (Priority 3)
+### P2.3: Fan-In (Deferred)
 
 **Use Case**: Merge tiled results, aggregate parallel outputs.
 
@@ -338,17 +367,6 @@ async def update(self, node: NodeState) -> bool:
 | Update _dependencies_met() for dynamic nodes | ⏳ TODO | `services/node_service.py` |
 | Add fan_in context to templates | ⏳ TODO | `orchestrator/engine/templates.py` |
 | Collect all outputs for fan-in node | ⏳ TODO | `orchestrator/loop.py` |
-
-### P2.4: Checkpointing (Priority 4)
-
-**Use Case**: Resume long-running tasks after failure/timeout.
-
-| Task | Status | File |
-|------|--------|------|
-| Add checkpoint fields to TaskResult | ⏳ TODO | `core/models/task.py` |
-| Create CheckpointableHandler base | ⏳ TODO | `handlers/base.py` |
-| Handle checkpoint in result processing | ⏳ TODO | `services/node_service.py` |
-| Resume from checkpoint on retry | ⏳ TODO | `orchestrator/loop.py` |
 
 ---
 
@@ -373,18 +391,21 @@ Phase A: Foundation ✅ COMPLETE
 3. P0.2 Retry Logic             ✅ DONE
 4. P0.3 Orchestrator Stats      ✅ DONE
 
-Phase A.5: Concurrency Control 🔒 RECOMMENDED NEXT
-──────────────────────────────────────────────────
-5. L1.* Orchestrator + Job Locks  ← Prevent multi-instance bugs
-6. L2.* Version columns           ← Optimistic locking
-7. L3.* Conflict handling         ← Graceful retry on conflict
+Phase A.5: Concurrency Control ✅ COMPLETE
+──────────────────────────────────────────
+5. L1.* Orchestrator + Job Locks  ✅ DONE
+6. L2.* Version columns           ✅ DONE
+7. L3.* Conflict handling         ✅ DONE
 
-Phase B: Advanced DAG Patterns 🎯 CURRENT
-─────────────────────────────────────────
+Phase B: Core DAG Patterns 🎯 CURRENT
+─────────────────────────────────────
 8.  P2.1 Conditional Routing ← Size-based routing, branch skipping
-9.  P2.2 Fan-Out             ← Dynamic parallel task creation
-10. P2.3 Fan-In              ← Aggregate parallel results
-11. P2.4 Checkpointing       ← Resume long-running tasks
+9.  P2.4 Checkpointing       ← Resume long-running tasks
+
+Phase B.5: Parallel Patterns (Deferred)
+───────────────────────────────────────
+10. P2.2 Fan-Out             ← Dynamic parallel task creation
+11. P2.3 Fan-In              ← Aggregate parallel results
 
 Phase C: Stability
 ──────────────────

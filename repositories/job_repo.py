@@ -50,12 +50,12 @@ class JobRepository:
                 INSERT INTO {TABLE_JOBS} (
                     job_id, workflow_id, status, input_params, result_data,
                     error_message, created_at, started_at,
-                    completed_at, submitted_by, correlation_id
+                    completed_at, submitted_by, correlation_id, version
                 ) VALUES (
                     %(job_id)s, %(workflow_id)s, %(status)s, %(input_params)s,
                     %(result_data)s, %(error_message)s,
                     %(created_at)s, %(started_at)s, %(completed_at)s,
-                    %(submitted_by)s, %(correlation_id)s
+                    %(submitted_by)s, %(correlation_id)s, %(version)s
                 )
                 """,
                 {
@@ -70,6 +70,7 @@ class JobRepository:
                     "completed_at": job.completed_at,
                     "submitted_by": job.submitted_by,
                     "correlation_id": job.correlation_id,
+                    "version": job.version,
                 },
             )
             logger.info(f"Created job {job.job_id} for workflow {job.workflow_id}")
@@ -98,20 +99,24 @@ class JobRepository:
 
             return self._row_to_job(row)
 
-    async def update(self, job: Job) -> Job:
+    async def update(self, job: Job) -> bool:
         """
-        Update an existing job.
+        Update an existing job with optimistic locking.
+
+        Uses version column for optimistic locking. If the version in the
+        database doesn't match the expected version, the update fails and
+        returns False (indicating a concurrent modification).
 
         Args:
             job: Job instance with updated fields
 
         Returns:
-            Updated job
+            True if update succeeded, False if version conflict
         """
         job.updated_at = datetime.utcnow()
 
         async with self.pool.connection() as conn:
-            await conn.execute(
+            result = await conn.execute(
                 f"""
                 UPDATE {TABLE_JOBS} SET
                     status = %(status)s,
@@ -120,22 +125,38 @@ class JobRepository:
                     metadata = %(metadata)s,
                     started_at = %(started_at)s,
                     completed_at = %(completed_at)s,
-                    updated_at = %(updated_at)s
+                    updated_at = %(updated_at)s,
+                    version = version + 1
                 WHERE job_id = %(job_id)s
+                  AND version = %(version)s
                 """,
                 {
                     "job_id": job.job_id,
                     "status": job.status.value,
-                    "result_data": job.result_data,
+                    "result_data": Json(job.result_data) if job.result_data else None,
                     "error_message": job.error_message,
-                    "metadata": job.metadata,
+                    "metadata": Json(job.metadata) if job.metadata else None,
                     "started_at": job.started_at,
                     "completed_at": job.completed_at,
                     "updated_at": job.updated_at,
+                    "version": job.version,
                 },
             )
-            logger.debug(f"Updated job {job.job_id} status={job.status.value}")
-            return job
+
+            if result.rowcount == 0:
+                logger.warning(
+                    f"Version conflict updating job {job.job_id} "
+                    f"(expected version {job.version})"
+                )
+                return False
+
+            # Update local version to match DB
+            job.version += 1
+            logger.debug(
+                f"Updated job {job.job_id} status={job.status.value} "
+                f"version={job.version}"
+            )
+            return True
 
     async def update_status(
         self,
@@ -143,44 +164,81 @@ class JobRepository:
         status: JobStatus,
         error_message: Optional[str] = None,
         result_data: Optional[Dict[str, Any]] = None,
+        expected_version: Optional[int] = None,
     ) -> bool:
         """
-        Update job status with optional error/result.
+        Update job status with optional error/result and optimistic locking.
 
         Args:
             job_id: Job identifier
             status: New status
             error_message: Error details (for FAILED status)
             result_data: Result data (for COMPLETED status)
+            expected_version: If provided, uses optimistic locking. Update
+                fails if DB version doesn't match.
 
         Returns:
-            True if update succeeded
+            True if update succeeded, False if version conflict or no rows updated
         """
         now = datetime.utcnow()
         completed_at = now if status.is_terminal() else None
-        started_at_clause = ", started_at = %s" if status == JobStatus.RUNNING else ""
 
         async with self.pool.connection() as conn:
             if status == JobStatus.RUNNING:
-                result = await conn.execute(
-                    f"""
-                    UPDATE {TABLE_JOBS}
-                    SET status = %s, updated_at = %s, started_at = %s
-                    WHERE job_id = %s AND started_at IS NULL
-                    """,
-                    (status.value, now, now, job_id),
-                )
+                # For RUNNING transition, also check started_at IS NULL
+                if expected_version is not None:
+                    result = await conn.execute(
+                        f"""
+                        UPDATE {TABLE_JOBS}
+                        SET status = %s, updated_at = %s, started_at = %s,
+                            version = version + 1
+                        WHERE job_id = %s AND started_at IS NULL
+                          AND version = %s
+                        """,
+                        (status.value, now, now, job_id, expected_version),
+                    )
+                else:
+                    result = await conn.execute(
+                        f"""
+                        UPDATE {TABLE_JOBS}
+                        SET status = %s, updated_at = %s, started_at = %s,
+                            version = version + 1
+                        WHERE job_id = %s AND started_at IS NULL
+                        """,
+                        (status.value, now, now, job_id),
+                    )
             else:
                 # Wrap result_data in Json() for psycopg3 serialization
                 result_json = Json(result_data) if result_data else None
-                result = await conn.execute(
-                    f"""
-                    UPDATE {TABLE_JOBS}
-                    SET status = %s, updated_at = %s, completed_at = %s,
-                        error_message = %s, result_data = %s
-                    WHERE job_id = %s
-                    """,
-                    (status.value, now, completed_at, error_message, result_json, job_id),
+                if expected_version is not None:
+                    result = await conn.execute(
+                        f"""
+                        UPDATE {TABLE_JOBS}
+                        SET status = %s, updated_at = %s, completed_at = %s,
+                            error_message = %s, result_data = %s,
+                            version = version + 1
+                        WHERE job_id = %s AND version = %s
+                        """,
+                        (status.value, now, completed_at, error_message,
+                         result_json, job_id, expected_version),
+                    )
+                else:
+                    result = await conn.execute(
+                        f"""
+                        UPDATE {TABLE_JOBS}
+                        SET status = %s, updated_at = %s, completed_at = %s,
+                            error_message = %s, result_data = %s,
+                            version = version + 1
+                        WHERE job_id = %s
+                        """,
+                        (status.value, now, completed_at, error_message,
+                         result_json, job_id),
+                    )
+
+            if result.rowcount == 0 and expected_version is not None:
+                logger.warning(
+                    f"Version conflict updating job {job_id} status to {status.value} "
+                    f"(expected version {expected_version})"
                 )
 
             return result.rowcount > 0
@@ -248,6 +306,29 @@ class JobRepository:
             )
             return await result.fetchone() is not None
 
+    async def list_recent(self, limit: int = 100) -> List[Job]:
+        """
+        List most recent jobs regardless of status.
+
+        Args:
+            limit: Maximum results
+
+        Returns:
+            List of Job instances ordered by created_at DESC
+        """
+        async with self.pool.connection() as conn:
+            conn.row_factory = dict_row
+            result = await conn.execute(
+                f"""
+                SELECT * FROM {TABLE_JOBS}
+                ORDER BY created_at DESC
+                LIMIT %s
+                """,
+                (limit,),
+            )
+            rows = await result.fetchall()
+            return [self._row_to_job(row) for row in rows]
+
     def _row_to_job(self, row: Dict[str, Any]) -> Job:
         """Convert database row to Job model."""
         # Handle updated_at - fallback to created_at if not present
@@ -267,4 +348,5 @@ class JobRepository:
             updated_at=updated_at,
             submitted_by=row.get("submitted_by"),
             correlation_id=row.get("correlation_id"),
+            version=row.get("version", 1),
         )

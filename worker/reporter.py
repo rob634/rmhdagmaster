@@ -81,6 +81,44 @@ class ResultReporter(ABC):
         """
         pass
 
+    @abstractmethod
+    async def report_checkpoint(
+        self,
+        task_id: str,
+        job_id: str,
+        node_id: str,
+        phase_name: str,
+        phase_index: int,
+        total_phases: int,
+        progress_current: int,
+        progress_total: Optional[int],
+        progress_message: Optional[str],
+        state_data: Optional[Dict[str, Any]],
+        artifacts_completed: Optional[list],
+        is_final: bool = False,
+    ) -> Optional[str]:
+        """
+        Report a checkpoint during task execution.
+
+        Args:
+            task_id: Task identifier
+            job_id: Job identifier
+            node_id: Node identifier
+            phase_name: Current phase name
+            phase_index: Zero-based phase index
+            total_phases: Total number of phases
+            progress_current: Current progress count
+            progress_total: Total items (optional)
+            progress_message: Progress message
+            state_data: Handler-specific state for resume
+            artifacts_completed: List of completed artifact IDs
+            is_final: True if task completed successfully
+
+        Returns:
+            Checkpoint ID if successful, None otherwise
+        """
+        pass
+
     async def close(self) -> None:
         """Clean up resources."""
         pass
@@ -230,6 +268,74 @@ class DatabaseReporter(ResultReporter):
             logger.warning(f"Failed to report progress: {e}")
             return False
 
+    async def report_checkpoint(
+        self,
+        task_id: str,
+        job_id: str,
+        node_id: str,
+        phase_name: str,
+        phase_index: int,
+        total_phases: int,
+        progress_current: int,
+        progress_total: Optional[int],
+        progress_message: Optional[str],
+        state_data: Optional[Dict[str, Any]],
+        artifacts_completed: Optional[list],
+        is_final: bool = False,
+    ) -> Optional[str]:
+        """Report checkpoint to database."""
+        import uuid
+
+        try:
+            pool = await self._get_pool()
+            checkpoint_id = str(uuid.uuid4())
+            progress_percent = None
+            if progress_total and progress_total > 0:
+                progress_percent = (progress_current / progress_total) * 100
+
+            async with pool.connection() as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute(
+                        """
+                        INSERT INTO dagapp.dag_checkpoints (
+                            checkpoint_id, job_id, node_id, task_id,
+                            phase_name, phase_index, total_phases,
+                            progress_current, progress_total, progress_percent,
+                            progress_message, state_data, artifacts_completed,
+                            is_final, is_valid, created_at, updated_at
+                        ) VALUES (
+                            %s, %s, %s, %s, %s, %s, %s,
+                            %s, %s, %s, %s, %s, %s,
+                            %s, true, %s, %s
+                        )
+                        """,
+                        (
+                            checkpoint_id,
+                            job_id,
+                            node_id,
+                            task_id,
+                            phase_name,
+                            phase_index,
+                            total_phases,
+                            progress_current,
+                            progress_total,
+                            progress_percent,
+                            progress_message,
+                            json.dumps(state_data) if state_data else None,
+                            json.dumps(artifacts_completed) if artifacts_completed else '[]',
+                            is_final,
+                            datetime.utcnow(),
+                            datetime.utcnow(),
+                        )
+                    )
+
+            logger.debug(f"Saved checkpoint {checkpoint_id} for task {task_id}")
+            return checkpoint_id
+
+        except Exception as e:
+            logger.warning(f"Failed to save checkpoint: {e}")
+            return None
+
     async def close(self) -> None:
         """Close connection pool."""
         if self._pool:
@@ -354,6 +460,61 @@ class HTTPReporter(ResultReporter):
         except Exception as e:
             logger.debug(f"Progress report failed: {e}")
             return False
+
+    async def report_checkpoint(
+        self,
+        task_id: str,
+        job_id: str,
+        node_id: str,
+        phase_name: str,
+        phase_index: int,
+        total_phases: int,
+        progress_current: int,
+        progress_total: Optional[int],
+        progress_message: Optional[str],
+        state_data: Optional[Dict[str, Any]],
+        artifacts_completed: Optional[list],
+        is_final: bool = False,
+    ) -> Optional[str]:
+        """Report checkpoint via HTTP POST."""
+        url = f"{self._callback_url}/api/v1/callbacks/checkpoint"
+
+        payload = {
+            "task_id": task_id,
+            "job_id": job_id,
+            "node_id": node_id,
+            "phase_name": phase_name,
+            "phase_index": phase_index,
+            "total_phases": total_phases,
+            "progress_current": progress_current,
+            "progress_total": progress_total,
+            "progress_message": progress_message,
+            "state_data": state_data,
+            "artifacts_completed": artifacts_completed or [],
+            "is_final": is_final,
+        }
+
+        try:
+            session = await self._get_session()
+
+            async with session.post(
+                url,
+                json=payload,
+                headers={"Content-Type": "application/json"},
+            ) as response:
+                if response.status in (200, 201, 202):
+                    data = await response.json()
+                    checkpoint_id = data.get("checkpoint_id")
+                    logger.debug(f"Saved checkpoint {checkpoint_id} for task {task_id}")
+                    return checkpoint_id
+
+                body = await response.text()
+                logger.warning(f"Checkpoint save failed: status={response.status}, body={body[:500]}")
+                return None
+
+        except Exception as e:
+            logger.warning(f"Checkpoint save failed: {e}")
+            return None
 
     async def close(self) -> None:
         """Close HTTP session."""

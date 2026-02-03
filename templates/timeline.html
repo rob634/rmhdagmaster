@@ -1,0 +1,167 @@
+{% extends "base.html" %}
+{% from "partials/status_badge.html" import badge %}
+
+{% block title %}Timeline - Job {{ job.job_id[:8] }}{% endblock %}
+
+{% block page_title %}Job Timeline{% endblock %}
+
+{% block content %}
+<!-- Job Header -->
+<div class="job-header">
+    <div>
+        <h1 class="job-title">
+            <i data-feather="activity" style="width: 24px; height: 24px; margin-right: 8px;"></i>
+            Timeline
+        </h1>
+        <div class="job-meta">
+            <span class="job-meta-item">
+                <i data-feather="hash"></i>
+                <a href="/ui/jobs/{{ job.job_id }}">{{ job.job_id[:12] }}...</a>
+            </span>
+            <span class="job-meta-item">
+                <i data-feather="git-branch"></i>
+                {{ job.workflow_id }}
+            </span>
+            <span class="job-meta-item">
+                <i data-feather="clock"></i>
+                {{ job.created_at }}
+            </span>
+        </div>
+    </div>
+    <div style="display: flex; gap: 12px; align-items: flex-start;">
+        {{ badge(job.status, 'lg') }}
+    </div>
+</div>
+
+<!-- Stats -->
+<div class="stats-grid mb-4">
+    <div class="stat-card">
+        <div class="stat-card-header">
+            <span class="stat-label">Total Events</span>
+            <div class="stat-icon">
+                <i data-feather="activity"></i>
+            </div>
+        </div>
+        <div class="stat-value">{{ stats.total }}</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-card-header">
+            <span class="stat-label">Success</span>
+            <div class="stat-icon">
+                <i data-feather="check-circle"></i>
+            </div>
+        </div>
+        <div class="stat-value text-success">{{ stats.success }}</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-card-header">
+            <span class="stat-label">Warnings</span>
+            <div class="stat-icon">
+                <i data-feather="alert-triangle"></i>
+            </div>
+        </div>
+        <div class="stat-value text-warning">{{ stats.warning }}</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-card-header">
+            <span class="stat-label">Failures</span>
+            <div class="stat-icon">
+                <i data-feather="x-circle"></i>
+            </div>
+        </div>
+        <div class="stat-value text-danger">{{ stats.failure }}</div>
+    </div>
+</div>
+
+<!-- Filters -->
+<div class="card mb-4">
+    <div class="card-body">
+        <form method="GET" action="/ui/jobs/{{ job.job_id }}/timeline" style="display: flex; gap: 16px; align-items: center; flex-wrap: wrap;">
+            <div>
+                <label class="text-muted" style="font-size: 12px; display: block; margin-bottom: 4px;">Event Type</label>
+                <select name="event_type" class="btn btn-secondary" onchange="this.form.submit()">
+                    <option value="">All Events</option>
+                    <optgroup label="Job Events">
+                        <option value="job_created" {{ 'selected' if filters.event_type == 'job_created' }}>Job Created</option>
+                        <option value="job_started" {{ 'selected' if filters.event_type == 'job_started' }}>Job Started</option>
+                        <option value="job_completed" {{ 'selected' if filters.event_type == 'job_completed' }}>Job Completed</option>
+                        <option value="job_failed" {{ 'selected' if filters.event_type == 'job_failed' }}>Job Failed</option>
+                    </optgroup>
+                    <optgroup label="Node Events">
+                        <option value="node_ready" {{ 'selected' if filters.event_type == 'node_ready' }}>Node Ready</option>
+                        <option value="node_dispatched" {{ 'selected' if filters.event_type == 'node_dispatched' }}>Node Dispatched</option>
+                        <option value="node_started" {{ 'selected' if filters.event_type == 'node_started' }}>Node Started</option>
+                        <option value="node_completed" {{ 'selected' if filters.event_type == 'node_completed' }}>Node Completed</option>
+                        <option value="node_failed" {{ 'selected' if filters.event_type == 'node_failed' }}>Node Failed</option>
+                    </optgroup>
+                </select>
+            </div>
+            <div>
+                <label class="text-muted" style="font-size: 12px; display: block; margin-bottom: 4px;">Status</label>
+                <select name="status" class="btn btn-secondary" onchange="this.form.submit()">
+                    <option value="">All Statuses</option>
+                    <option value="success" {{ 'selected' if filters.status == 'success' }}>Success</option>
+                    <option value="info" {{ 'selected' if filters.status == 'info' }}>Info</option>
+                    <option value="warning" {{ 'selected' if filters.status == 'warning' }}>Warning</option>
+                    <option value="failure" {{ 'selected' if filters.status == 'failure' }}>Failure</option>
+                </select>
+            </div>
+            <div>
+                <label class="text-muted" style="font-size: 12px; display: block; margin-bottom: 4px;">Node</label>
+                <select name="node_id" class="btn btn-secondary" onchange="this.form.submit()">
+                    <option value="">All Nodes</option>
+                    {% for node_id in node_ids %}
+                    <option value="{{ node_id }}" {{ 'selected' if filters.node_id == node_id }}>{{ node_id }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div style="margin-left: auto;">
+                <label style="font-size: 12px; display: block; margin-bottom: 4px; visibility: hidden;">Actions</label>
+                <a href="/ui/jobs/{{ job.job_id }}/timeline" class="btn btn-secondary">Reset</a>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Timeline -->
+<div class="card">
+    <div class="card-header">
+        <h3 class="card-title">
+            Event Timeline
+            {% if events %}
+            <span class="text-muted" style="font-weight: normal; font-size: 14px;">
+                ({{ events | length }} events)
+            </span>
+            {% endif %}
+        </h3>
+    </div>
+    <div class="card-body">
+        {% include "partials/timeline.html" %}
+    </div>
+</div>
+
+<!-- Back Links -->
+<div class="mt-4" style="display: flex; gap: 12px;">
+    <a href="/ui/jobs/{{ job.job_id }}" class="btn btn-secondary">
+        <i data-feather="arrow-left"></i>
+        Back to Job
+    </a>
+    <a href="/ui/jobs" class="btn btn-secondary">
+        <i data-feather="list"></i>
+        All Jobs
+    </a>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    // Auto-refresh if job is still running
+    {% if job.status == 'running' %}
+    setInterval(function() {
+        if (!document.hidden) {
+            location.reload();
+        }
+    }, 5000);
+    {% endif %}
+</script>
+{% endblock %}

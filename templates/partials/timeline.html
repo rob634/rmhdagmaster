@@ -1,0 +1,129 @@
+{# Timeline Component Partial #}
+{# Usage: {% include "partials/timeline.html" with context %} #}
+{# Expects: events (list of JobEvent objects) #}
+
+{% macro event_icon(event_type) %}
+    {% if event_type == 'job_created' %}
+        <i data-feather="plus-circle"></i>
+    {% elif event_type == 'job_started' %}
+        <i data-feather="play"></i>
+    {% elif event_type == 'job_completed' %}
+        <i data-feather="check-circle"></i>
+    {% elif event_type == 'job_failed' %}
+        <i data-feather="x-circle"></i>
+    {% elif event_type == 'job_cancelled' %}
+        <i data-feather="slash"></i>
+    {% elif event_type == 'node_ready' %}
+        <i data-feather="arrow-right"></i>
+    {% elif event_type == 'node_dispatched' %}
+        <i data-feather="send"></i>
+    {% elif event_type == 'node_started' %}
+        <i data-feather="play-circle"></i>
+    {% elif event_type == 'node_completed' %}
+        <i data-feather="check"></i>
+    {% elif event_type == 'node_failed' %}
+        <i data-feather="x"></i>
+    {% elif event_type == 'node_skipped' %}
+        <i data-feather="skip-forward"></i>
+    {% elif event_type == 'node_retry' %}
+        <i data-feather="refresh-cw"></i>
+    {% elif event_type == 'node_timeout' %}
+        <i data-feather="clock"></i>
+    {% elif event_type == 'task_received' %}
+        <i data-feather="inbox"></i>
+    {% elif event_type == 'task_completed' %}
+        <i data-feather="check-square"></i>
+    {% elif event_type == 'task_failed' %}
+        <i data-feather="alert-triangle"></i>
+    {% elif event_type == 'orchestrator_eval' %}
+        <i data-feather="cpu"></i>
+    {% elif event_type == 'orchestrator_dispatch' %}
+        <i data-feather="zap"></i>
+    {% elif event_type == 'checkpoint' %}
+        <i data-feather="flag"></i>
+    {% elif event_type == 'warning' %}
+        <i data-feather="alert-triangle"></i>
+    {% elif event_type == 'error' %}
+        <i data-feather="alert-octagon"></i>
+    {% else %}
+        <i data-feather="circle"></i>
+    {% endif %}
+{% endmacro %}
+
+{% macro format_event_type(event_type) %}
+    {{ event_type | replace('_', ' ') | title }}
+{% endmacro %}
+
+<div class="timeline">
+    {% if events %}
+        {% for event in events %}
+        <div class="timeline-item {{ event.event_status.value }}">
+            <div class="timeline-marker {{ event.event_status.value }}">
+                {{ event_icon(event.event_type.value) }}
+            </div>
+            <div class="timeline-connector"></div>
+            <div class="timeline-content">
+                <div class="timeline-header">
+                    <span class="timeline-title">{{ format_event_type(event.event_type.value) }}</span>
+                    <span class="timeline-time" title="{{ event.created_at.strftime('%Y-%m-%d %H:%M:%S') }}">
+                        {{ event.created_at.strftime('%H:%M:%S') }}
+                    </span>
+                </div>
+
+                {% if event.node_id %}
+                <div class="timeline-meta">
+                    <span class="timeline-node">
+                        <i data-feather="git-commit" style="width: 12px; height: 12px;"></i>
+                        {{ event.node_id }}
+                    </span>
+                </div>
+                {% endif %}
+
+                {% if event.task_id %}
+                <div class="timeline-meta">
+                    <span class="timeline-task">
+                        <i data-feather="hash" style="width: 12px; height: 12px;"></i>
+                        <code>{{ event.task_id[:16] }}...</code>
+                    </span>
+                </div>
+                {% endif %}
+
+                {% if event.duration_ms %}
+                <div class="timeline-meta">
+                    <span class="timeline-duration">
+                        <i data-feather="clock" style="width: 12px; height: 12px;"></i>
+                        {{ (event.duration_ms / 1000) | round(2) }}s
+                    </span>
+                </div>
+                {% endif %}
+
+                {% if event.error_message %}
+                <div class="timeline-error">
+                    {{ event.error_message }}
+                </div>
+                {% endif %}
+
+                {% if event.event_data and event.event_data | length > 0 %}
+                <details class="timeline-details">
+                    <summary>View Details</summary>
+                    <pre>{{ event.event_data | tojson(indent=2) }}</pre>
+                </details>
+                {% endif %}
+
+                {% if event.checkpoint_name %}
+                <div class="timeline-checkpoint">
+                    <i data-feather="flag" style="width: 12px; height: 12px;"></i>
+                    {{ event.checkpoint_name }}
+                </div>
+                {% endif %}
+            </div>
+        </div>
+        {% endfor %}
+    {% else %}
+        <div class="empty-state">
+            <i data-feather="activity"></i>
+            <div class="empty-state-title">No events</div>
+            <div class="empty-state-description">No timeline events recorded for this job.</div>
+        </div>
+    {% endif %}
+</div>

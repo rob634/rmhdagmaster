@@ -23,6 +23,7 @@ from core.models.job import Job
 from core.models.node import NodeState
 from core.models.task import TaskMessage, TaskResult
 from core.models.events import JobEvent, EventType, EventStatus
+from core.models.checkpoint import Checkpoint
 
 __all__ = [
     # Workflow
@@ -36,6 +37,8 @@ __all__ = [
     # Task
     "TaskMessage",
     "TaskResult",
+    # Checkpoint
+    "Checkpoint",
     # Events
     "JobEvent",
     "EventType",

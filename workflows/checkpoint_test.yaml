@@ -1,0 +1,94 @@
+# ============================================================================
+# CHECKPOINT TEST WORKFLOW
+# ============================================================================
+# Tests the checkpointing feature using the echo handler in multi-step mode.
+# START -> multi_step_echo -> END
+#
+# The echo handler with steps > 1 will:
+# 1. Process each step sequentially
+# 2. Save a checkpoint after each step (except the last)
+# 3. On retry, resume from the last checkpoint
+#
+# To test checkpointing:
+# 1. Submit job with steps=5
+# 2. Interrupt the worker after 2-3 steps
+# 3. Restart the worker
+# 4. Job should resume from last checkpoint and complete
+# ============================================================================
+
+workflow_id: checkpoint_test
+name: Checkpoint Test Workflow
+version: 1
+description: Test workflow demonstrating resumable execution with checkpoints
+
+inputs:
+  message:
+    type: string
+    required: true
+    description: Message to include in output
+  steps:
+    type: integer
+    required: false
+    default: 5
+    description: Number of steps to execute (each saves a checkpoint)
+  step_delay:
+    type: number
+    required: false
+    default: 0.5
+    description: Delay between steps in seconds (for testing interruption)
+
+nodes:
+  start:
+    type: start
+    description: Workflow entry point
+    next: multi_step_echo
+
+  multi_step_echo:
+    type: task
+    handler: echo
+    queue: dag-worker-tasks
+    description: Multi-step echo with checkpointing
+    params:
+      message: "{{ input.message }}"
+      steps: "{{ input.steps }}"
+      step_delay: "{{ input.step_delay }}"
+    timeout_seconds: 300
+    retry:
+      max_attempts: 5
+      backoff: exponential
+      initial_delay_seconds: 2
+    next: end
+
+  end:
+    type: end
+    description: Workflow exit point
+
+# ============================================================================
+# EXPECTED BEHAVIOR
+# ============================================================================
+#
+# Normal execution (no interruption):
+#   - Handler executes all steps sequentially
+#   - Checkpoints saved after steps 1, 2, 3, 4
+#   - Final result includes completed_steps: [step_1, step_2, step_3, step_4, step_5]
+#
+# Interrupted execution (e.g., worker crash after step 3):
+#   - Checkpoints saved for steps 1, 2, 3
+#   - On retry, handler receives checkpoint_data with next_step: 4
+#   - Handler resumes from step 4, completes step 4 and 5
+#   - Final result includes all steps
+#
+# Checkpoint data structure:
+#   {
+#     "checkpoint_id": "uuid",
+#     "phase_name": "step_3",
+#     "phase_index": 2,
+#     "total_phases": 5,
+#     "progress_current": 3,
+#     "progress_total": 5,
+#     "state_data": {
+#       "next_step": 4,
+#       "completed_steps": ["step_1", "step_2", "step_3"]
+#     }
+#   }
+# ============================================================================

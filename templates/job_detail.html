@@ -31,6 +31,10 @@
     </div>
     <div style="display: flex; gap: 12px; align-items: flex-start;">
         {{ badge(job.status, 'lg') }}
+        <a href="/ui/jobs/{{ job.job_id }}/timeline" class="btn btn-secondary">
+            <i data-feather="activity"></i>
+            Timeline
+        </a>
         {% if job.status == 'running' %}
         <button class="btn btn-secondary" onclick="cancelJob('{{ job.job_id }}')" data-confirm="Cancel this job?">
             <i data-feather="x"></i>

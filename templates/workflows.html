@@ -1,0 +1,97 @@
+{% extends "base.html" %}
+
+{% block title %}Workflows - DAG Orchestrator{% endblock %}
+
+{% block page_title %}Workflows{% endblock %}
+
+{% block content %}
+<div class="card">
+    <div class="card-header">
+        <h3 class="card-title">
+            Available Workflows
+            <span class="text-muted" style="font-weight: normal; font-size: 14px;">
+                ({{ workflows | length }})
+            </span>
+        </h3>
+    </div>
+    <div class="card-body">
+        {% if workflows %}
+        <div class="table-container">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Workflow ID</th>
+                        <th>Name</th>
+                        <th>Description</th>
+                        <th>Nodes</th>
+                        <th>Version</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for wf in workflows %}
+                    <tr>
+                        <td>
+                            <a href="/ui/workflows/{{ wf.workflow_id }}">
+                                <code>{{ wf.workflow_id }}</code>
+                            </a>
+                        </td>
+                        <td>
+                            <strong>{{ wf.name | default(wf.workflow_id) }}</strong>
+                        </td>
+                        <td class="text-muted" style="max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+                            {{ wf.description | default('-') | truncate(60) }}
+                        </td>
+                        <td>
+                            <span class="badge badge-secondary">
+                                {{ wf.nodes | length }} nodes
+                            </span>
+                        </td>
+                        <td>
+                            <span class="badge badge-info">v{{ wf.version }}</span>
+                        </td>
+                        <td>
+                            <a href="/ui/workflows/{{ wf.workflow_id }}" class="btn btn-icon" title="View Details">
+                                <i data-feather="eye"></i>
+                            </a>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <div class="empty-state">
+            <i data-feather="git-branch"></i>
+            <div class="empty-state-title">No workflows loaded</div>
+            <div class="empty-state-description">
+                Add YAML workflow definitions to the <code>workflows/</code> directory.
+            </div>
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+<!-- Workflow File Locations -->
+<div class="card mt-4">
+    <div class="card-header">
+        <h3 class="card-title">Workflow Configuration</h3>
+    </div>
+    <div class="card-body">
+        <div class="health-items">
+            <div class="health-item">
+                <span class="health-item-label">Workflows Directory</span>
+                <span class="health-item-value"><code>{{ workflows_dir | default('./workflows/') }}</code></span>
+            </div>
+            <div class="health-item">
+                <span class="health-item-label">Loaded Count</span>
+                <span class="health-item-value">{{ workflows | length }}</span>
+            </div>
+            <div class="health-item">
+                <span class="health-item-label">File Format</span>
+                <span class="health-item-value">YAML (.yaml, .yml)</span>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

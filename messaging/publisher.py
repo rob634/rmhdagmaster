@@ -14,7 +14,7 @@ Sends task messages to Azure Service Bus for worker execution.
 
 import json
 import logging
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from datetime import datetime, timedelta
 
 from azure.servicebus.aio import ServiceBusClient, ServiceBusSender
@@ -186,6 +186,7 @@ class TaskPublisher:
         node: NodeState,
         workflow: WorkflowDefinition,
         job_params: dict,
+        checkpoint_data: Optional[Dict[str, Any]] = None,
     ) -> TaskMessage:
         """
         Create a TaskMessage from a node state.
@@ -194,6 +195,7 @@ class TaskPublisher:
             node: NodeState to dispatch
             workflow: Workflow definition for handler info
             job_params: Job input parameters
+            checkpoint_data: Optional checkpoint data for resumable tasks (on retry)
 
         Returns:
             TaskMessage ready for dispatch
@@ -214,6 +216,7 @@ class TaskPublisher:
             params=params,
             timeout_seconds=node_def.timeout_seconds,
             retry_count=node.retry_count,
+            checkpoint_data=checkpoint_data,
         )
 
     def _resolve_params(

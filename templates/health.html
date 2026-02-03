@@ -92,20 +92,52 @@
         </div>
     </div>
 
+    <!-- Worker Status -->
+    <div class="health-section">
+        <div class="health-section-header">
+            <span class="health-indicator {{ 'healthy' if health.worker.healthy else 'unhealthy' }}"></span>
+            <h3 class="health-section-title">Worker</h3>
+        </div>
+        <div class="health-items">
+            <div class="health-item">
+                <span class="health-item-label">Status</span>
+                <span class="health-item-value {{ 'text-success' if health.worker.healthy else 'text-danger' }}">
+                    {{ health.worker.status | default('Unknown') }}
+                </span>
+            </div>
+            <div class="health-item">
+                <span class="health-item-label">Queue</span>
+                <span class="health-item-value">{{ health.worker.queue | default('-') }}</span>
+            </div>
+            <div class="health-item">
+                <span class="health-item-label">Latency</span>
+                <span class="health-item-value">{{ health.worker.latency_ms | default('-') }} ms</span>
+            </div>
+            <div class="health-item">
+                <span class="health-item-label">Version</span>
+                <span class="health-item-value">{{ health.worker.version | default('-') }}</span>
+            </div>
+        </div>
+    </div>
+
     <!-- System Resources -->
     <div class="health-section">
         <div class="health-section-header">
-            <span class="health-indicator healthy"></span>
+            <span class="health-indicator {{ 'healthy' if health.system.memory_percent < 90 else 'degraded' if health.system.memory_percent < 95 else 'unhealthy' }}"></span>
             <h3 class="health-section-title">System Resources</h3>
         </div>
         <div class="health-items">
             <div class="health-item">
                 <span class="health-item-label">Memory Usage</span>
-                <span class="health-item-value">{{ health.system.memory_percent | default('-') }}%</span>
+                <span class="health-item-value {{ 'text-danger' if health.system.memory_percent > 90 else 'text-warning' if health.system.memory_percent > 75 else '' }}">
+                    {{ health.system.memory_percent | default('-') }}%
+                </span>
             </div>
             <div class="health-item">
                 <span class="health-item-label">CPU Usage</span>
-                <span class="health-item-value">{{ health.system.cpu_percent | default('-') }}%</span>
+                <span class="health-item-value {{ 'text-danger' if health.system.cpu_percent > 90 else 'text-warning' if health.system.cpu_percent > 75 else '' }}">
+                    {{ health.system.cpu_percent | default('-') }}%
+                </span>
             </div>
             <div class="health-item">
                 <span class="health-item-label">Uptime</span>
@@ -113,7 +145,7 @@
             </div>
             <div class="health-item">
                 <span class="health-item-label">Version</span>
-                <span class="health-item-value">{{ health.system.version | default('0.1.0') }}</span>
+                <span class="health-item-value">v{{ health.system.version | default('0.1.0') }}</span>
             </div>
         </div>
     </div>

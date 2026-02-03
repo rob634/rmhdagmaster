@@ -29,7 +29,7 @@ from psycopg_pool import AsyncConnectionPool
 
 from core.models import Job, NodeState, TaskResult, WorkflowDefinition
 from core.contracts import JobStatus, NodeStatus
-from services import JobService, NodeService, WorkflowService, EventService
+from services import JobService, NodeService, WorkflowService, EventService, CheckpointService
 from messaging import TaskPublisher, get_publisher
 from infrastructure.locking import LockService
 
@@ -70,6 +70,7 @@ class Orchestrator:
 
         self.job_service = JobService(pool, workflow_service, event_service)
         self.node_service = NodeService(pool, workflow_service, event_service)
+        self.checkpoint_service = CheckpointService(pool)
 
         # Locking service for concurrency control
         self.lock_service = LockService(pool)
@@ -281,6 +282,11 @@ class Orchestrator:
         """
         Dispatch a node for execution.
 
+        Handles different node types:
+        - START/END: Auto-complete immediately
+        - CONDITIONAL: Evaluate and route immediately (no worker dispatch)
+        - TASK: Dispatch to worker queue
+
         Args:
             job: Parent job
             node: Node to dispatch
@@ -291,31 +297,162 @@ class Orchestrator:
         """
         node_def = workflow.get_node(node.node_id)
 
-        # Skip non-task nodes (START, END, etc.)
+        # Handle START and END nodes - auto-complete immediately
         if node_def.type.value in ("start", "end"):
-            # Auto-complete START and END nodes by transitioning through the proper state machine
-            # READY -> DISPATCHED -> RUNNING -> COMPLETED
-            node.mark_dispatched(f"auto-{node.node_id}")  # Synthetic task_id
-            node.mark_running()
-            node.mark_completed({})
-            from repositories import NodeRepository
-            node_repo = NodeRepository(self.pool)
-            success = await node_repo.update(node)
-            if success:
-                logger.debug(f"Auto-completed {node_def.type.value} node: {node.node_id}")
-            else:
-                # Version conflict on auto-complete is unexpected but not fatal
-                logger.warning(
-                    f"Version conflict auto-completing {node_def.type.value} node "
-                    f"{node.node_id}, will retry"
+            return await self._auto_complete_node(node, node_def.type.value)
+
+        # Handle CONDITIONAL nodes - evaluate and route immediately
+        if node_def.type.value == "conditional":
+            return await self._handle_conditional_node(job, node, workflow)
+
+        # Handle TASK nodes - dispatch to worker queue
+        return await self._dispatch_task_node(job, node, workflow, node_def)
+
+    async def _auto_complete_node(self, node: NodeState, node_type: str) -> bool:
+        """
+        Auto-complete START and END nodes.
+
+        These nodes don't dispatch to workers - they complete immediately.
+        """
+        # READY -> DISPATCHED -> RUNNING -> COMPLETED
+        node.mark_dispatched(f"auto-{node.node_id}")  # Synthetic task_id
+        node.mark_running()
+        node.mark_completed({})
+        from repositories import NodeRepository
+        node_repo = NodeRepository(self.pool)
+        success = await node_repo.update(node)
+        if success:
+            logger.debug(f"Auto-completed {node_type} node: {node.node_id}")
+        else:
+            logger.warning(
+                f"Version conflict auto-completing {node_type} node "
+                f"{node.node_id}, will retry"
+            )
+        return success
+
+    async def _handle_conditional_node(
+        self,
+        job: Job,
+        node: NodeState,
+        workflow: WorkflowDefinition,
+    ) -> bool:
+        """
+        Handle a conditional node - evaluate and route immediately.
+
+        Conditional nodes don't dispatch to workers. They evaluate their
+        condition based on upstream output and route to the appropriate branch.
+
+        Args:
+            job: Parent job
+            node: The conditional node
+            workflow: Workflow definition
+
+        Returns:
+            True if evaluation succeeded
+        """
+        # Get outputs from completed nodes for template resolution
+        from repositories import NodeRepository
+        node_repo = NodeRepository(self.pool)
+        all_nodes = await node_repo.get_all_for_job(job.job_id)
+
+        node_outputs = {
+            n.node_id: n.output or {}
+            for n in all_nodes
+            if n.status == NodeStatus.COMPLETED and n.output
+        }
+
+        # Evaluate the conditional and determine routing
+        taken_branch, skipped_branches = await self.node_service.evaluate_and_route_conditional(
+            job_id=job.job_id,
+            conditional_node_id=node.node_id,
+            workflow=workflow,
+            job_params=job.input_params,
+            node_outputs=node_outputs,
+        )
+
+        if taken_branch is None:
+            # No branch matched - this is an error
+            logger.error(
+                f"Conditional node {node.node_id} failed to match any branch"
+            )
+            node.mark_failed("No conditional branch matched")
+            await node_repo.update(node)
+            return False
+
+        # Mark the conditional node as complete
+        # Store which branch was taken in the output for debugging
+        node.mark_dispatched(f"conditional-{node.node_id}")
+        node.mark_running()
+        node.mark_completed({
+            "taken_branch": taken_branch,
+            "skipped_branches": skipped_branches,
+        })
+        success = await node_repo.update(node)
+
+        if success:
+            logger.info(
+                f"Conditional node {node.node_id} routed to {taken_branch}, "
+                f"skipping {skipped_branches}"
+            )
+
+            # Skip the untaken branches and their exclusive descendants
+            if skipped_branches:
+                await self.node_service.skip_untaken_branches(
+                    job.job_id, skipped_branches, workflow
                 )
-            return success
+
+            # Emit event
+            if self._event_service:
+                await self._event_service.emit_node_completed(
+                    node,
+                    duration_ms=0,
+                    output_keys=["taken_branch", "skipped_branches"],
+                )
+        else:
+            logger.warning(
+                f"Version conflict completing conditional node {node.node_id}"
+            )
+
+        return success
+
+    async def _dispatch_task_node(
+        self,
+        job: Job,
+        node: NodeState,
+        workflow: WorkflowDefinition,
+        node_def: "NodeDefinition",
+    ) -> bool:
+        """
+        Dispatch a task node to a worker queue.
+
+        Args:
+            job: Parent job
+            node: The task node
+            workflow: Workflow definition
+            node_def: Node definition
+
+        Returns:
+            True if dispatch succeeded
+        """
+        # Load checkpoint data for retries (resumable tasks)
+        checkpoint_data = None
+        if node.retry_count > 0:
+            checkpoint_data = await self.checkpoint_service.get_checkpoint_data_for_retry(
+                job_id=job.job_id,
+                node_id=node.node_id,
+            )
+            if checkpoint_data:
+                logger.info(
+                    f"Loaded checkpoint for retry: job={job.job_id} node={node.node_id} "
+                    f"phase={checkpoint_data.get('phase_name')}"
+                )
 
         # Create task message
         task_message = self._publisher.create_task_message(
             node=node,
             workflow=workflow,
             job_params=job.input_params,
+            checkpoint_data=checkpoint_data,
         )
 
         # Mark node as dispatched

@@ -26,10 +26,13 @@ They just execute and report.
 """
 
 from datetime import datetime
-from typing import Any, Dict, List, Optional, ClassVar
+from typing import Any, Dict, List, Optional, ClassVar, TYPE_CHECKING
 from pydantic import BaseModel, Field
 
 from core.contracts import TaskData, TaskStatus
+
+if TYPE_CHECKING:
+    from core.models.checkpoint import Checkpoint
 
 
 class TaskMessage(TaskData):
@@ -71,13 +74,23 @@ class TaskMessage(TaskData):
         description="External correlation ID"
     )
 
+    # Checkpoint for resumption (on retry)
+    checkpoint_data: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Last checkpoint data for resumable tasks (on retry)"
+    )
+
     def to_queue_message(self) -> Dict[str, Any]:
         """
         Serialize to JSON for Service Bus.
 
         Returns dict ready for json.dumps().
+
+        Maps checkpoint_data to worker-expected format:
+        - checkpoint_phase: the phase name (for HandlerContext.checkpoint_phase)
+        - checkpoint_data: state data (for HandlerContext.checkpoint_data)
         """
-        return {
+        msg = {
             "task_id": self.task_id,
             "job_id": self.job_id,
             "node_id": self.node_id,
@@ -88,6 +101,14 @@ class TaskMessage(TaskData):
             "retry_count": self.retry_count,
             "correlation_id": self.correlation_id,
         }
+        # Map checkpoint data to worker-expected format
+        if self.checkpoint_data:
+            # Extract phase name for HandlerContext.checkpoint_phase
+            msg["checkpoint_phase"] = self.checkpoint_data.get("phase_name")
+            # Pass the full checkpoint info for HandlerContext.checkpoint_data
+            # Handler can access state_data, progress, artifacts, etc.
+            msg["checkpoint_data"] = self.checkpoint_data
+        return msg
 
     @classmethod
     def from_queue_message(cls, data: Dict[str, Any]) -> "TaskMessage":
@@ -175,6 +196,13 @@ class TaskResult(BaseModel):
         default=None,
         max_length=256,
         description="Current progress status message"
+    )
+
+    # Checkpoint reference (for resumable tasks)
+    checkpoint_id: Optional[str] = Field(
+        default=None,
+        max_length=64,
+        description="ID of the latest checkpoint saved during execution"
     )
 
     # Timestamp

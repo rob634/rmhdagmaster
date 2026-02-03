@@ -18,7 +18,7 @@ Manages node state transitions:
 
 import logging
 from datetime import datetime
-from typing import Dict, Any, Optional, List, Set
+from typing import Dict, Any, Optional, List, Set, Tuple
 
 from psycopg_pool import AsyncConnectionPool
 
@@ -401,33 +401,313 @@ class NodeService:
         output: Optional[Dict[str, Any]],
     ) -> List[str]:
         """
-        Evaluate conditional branches.
+        Evaluate conditional branches and return the matching branch target.
 
-        Simple implementation - matches conditions against output value.
+        Uses ConditionEvaluator for proper condition parsing and evaluation.
+
+        Args:
+            node_def: Conditional node definition
+            output: Output from the node that feeds into the conditional
+
+        Returns:
+            List with single next node ID, or empty if no match
         """
         if not node_def.branches or not node_def.condition_field:
             return []
 
-        # Get the value to evaluate
+        # Get the value to evaluate from the condition_field
+        # The condition_field may be a template like "size_mb" or a direct field name
         value = None
-        if output and node_def.condition_field in output:
-            value = output[node_def.condition_field]
+        if output:
+            # Try direct field access first
+            if node_def.condition_field in output:
+                value = output[node_def.condition_field]
+            else:
+                # Try dot notation (e.g., "metadata.size")
+                parts = node_def.condition_field.split(".")
+                current = output
+                for part in parts:
+                    if isinstance(current, dict) and part in current:
+                        current = current[part]
+                    else:
+                        current = None
+                        break
+                value = current
 
-        # Find matching branch
+        # Create condition evaluator (local import to avoid circular dependency)
+        from orchestrator.engine.evaluator import ConditionEvaluator
+        evaluator = ConditionEvaluator()
+
+        # Evaluate branches in order, first match wins
         default_branch = None
         for branch in node_def.branches:
             if branch.default:
                 default_branch = branch.next
                 continue
 
-            # Simple condition matching (could be extended)
             if branch.condition and value is not None:
-                # TODO: Implement proper condition evaluation
-                # For now, just use default
-                pass
+                # Build condition string: "value <condition>"
+                # Conditions are like "< 100", ">= 1000"
+                condition_str = branch.condition.strip()
 
-        # Return default if no match
+                # Check if condition already has the comparison format
+                # or if we need to prepend the value
+                if condition_str.startswith(("<", ">", "=", "!")):
+                    # Condition like "< 100" - compare value against RHS
+                    full_condition = f"value {condition_str}"
+                    context = {"value": value}
+                else:
+                    # Condition might be a direct expression
+                    full_condition = condition_str
+                    context = {"value": value, "output": output or {}}
+
+                if evaluator.evaluate(full_condition, context):
+                    logger.debug(
+                        f"Conditional branch matched: {branch.name or branch.next} "
+                        f"(condition: {condition_str}, value: {value})"
+                    )
+                    return [branch.next]
+
+        # No condition matched, use default
         if default_branch:
+            logger.debug(f"Conditional using default branch: {default_branch}")
             return [default_branch]
 
+        logger.warning(
+            f"No branch matched for conditional "
+            f"(condition_field: {node_def.condition_field}, value: {value})"
+        )
         return []
+
+    async def evaluate_and_route_conditional(
+        self,
+        job_id: str,
+        conditional_node_id: str,
+        workflow: WorkflowDefinition,
+        job_params: Dict[str, Any],
+        node_outputs: Dict[str, Dict[str, Any]],
+    ) -> Tuple[Optional[str], List[str]]:
+        """
+        Evaluate a conditional node and determine routing.
+
+        This is called when a conditional node's dependencies are met.
+        Conditionals don't dispatch to workers - they evaluate immediately.
+
+        Args:
+            job_id: Job identifier
+            conditional_node_id: The conditional node to evaluate
+            workflow: Workflow definition
+            job_params: Job input parameters (for template resolution)
+            node_outputs: Outputs from completed nodes (for template resolution)
+
+        Returns:
+            Tuple of (taken_branch_node_id, list_of_skipped_node_ids)
+        """
+        node_def = workflow.nodes.get(conditional_node_id)
+        if not node_def or node_def.type.value != "conditional":
+            return None, []
+
+        # Resolve condition_field template if needed
+        # Local imports to avoid circular dependency
+        from orchestrator.engine.templates import TemplateContext, get_resolver
+
+        condition_field = node_def.condition_field
+        if condition_field and "{{" in condition_field:
+            # Resolve the template to get actual field path
+            context = TemplateContext.from_job(job_params, node_outputs)
+            resolved = get_resolver().resolve(
+                {"field": condition_field}, context
+            )
+            condition_field = resolved.get("field", condition_field)
+
+        # Get the output from the node that feeds into this conditional
+        # This is typically the node that points to this conditional via 'next'
+        upstream_output = self._get_upstream_output(
+            conditional_node_id, workflow, node_outputs
+        )
+
+        # Temporarily set resolved condition_field for evaluation
+        original_field = node_def.condition_field
+        # Extract just the field name if it's a template like {{ nodes.validate.output.size_mb }}
+        if original_field and "output." in original_field:
+            # Extract field name after 'output.'
+            import re
+            match = re.search(r'output\.(\w+)', original_field)
+            if match:
+                node_def.condition_field = match.group(1)
+
+        # Evaluate which branch to take
+        taken_branches = self._evaluate_condition(node_def, upstream_output)
+
+        # Restore original
+        node_def.condition_field = original_field
+
+        taken_branch = taken_branches[0] if taken_branches else None
+
+        # Determine which branches to skip
+        skipped_nodes = []
+        if taken_branch and node_def.branches:
+            all_branch_targets = {b.next for b in node_def.branches if b.next}
+            untaken_targets = all_branch_targets - {taken_branch}
+            skipped_nodes = list(untaken_targets)
+
+        return taken_branch, skipped_nodes
+
+    def _get_upstream_output(
+        self,
+        node_id: str,
+        workflow: WorkflowDefinition,
+        node_outputs: Dict[str, Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Get output from the node that feeds into a given node.
+
+        Looks for nodes that have this node as their 'next' target.
+        """
+        for other_id, other_def in workflow.nodes.items():
+            if other_def.next:
+                next_nodes = (
+                    [other_def.next] if isinstance(other_def.next, str)
+                    else other_def.next
+                )
+                if node_id in next_nodes:
+                    return node_outputs.get(other_id)
+        return None
+
+    async def skip_untaken_branches(
+        self,
+        job_id: str,
+        nodes_to_skip: List[str],
+        workflow: WorkflowDefinition,
+    ) -> List[str]:
+        """
+        Mark nodes as SKIPPED when they're on untaken conditional branches.
+
+        Also recursively skips downstream nodes that are ONLY reachable
+        via the skipped nodes (not reachable via any other path).
+
+        Args:
+            job_id: Job identifier
+            nodes_to_skip: Initial list of node IDs to skip (branch targets)
+            workflow: Workflow definition
+
+        Returns:
+            List of all node IDs that were skipped
+        """
+        if not nodes_to_skip:
+            return []
+
+        # Get all nodes for this job
+        all_nodes = await self.node_repo.get_all_for_job(job_id)
+        nodes_by_id = {n.node_id: n for n in all_nodes}
+
+        # Build dependency graph (local import to avoid circular dependency)
+        from orchestrator.engine.evaluator import GraphBuilder
+        graph_builder = GraphBuilder()
+        graph = graph_builder.build(workflow)
+
+        # Find all nodes exclusively reachable via the nodes to skip
+        all_to_skip = set(nodes_to_skip)
+        all_to_skip.update(
+            self._find_exclusive_descendants(nodes_to_skip, workflow, graph)
+        )
+
+        # Skip each node
+        skipped = []
+        for node_id in all_to_skip:
+            node = nodes_by_id.get(node_id)
+            if node and node.status == NodeStatus.PENDING:
+                node.mark_skipped()
+                success = await self.node_repo.update(node)
+                if success:
+                    skipped.append(node_id)
+                    logger.info(f"Skipped node {node_id} (untaken branch)")
+
+                    # Emit NODE_SKIPPED event
+                    if self._event_service:
+                        await self._event_service.emit_node_skipped(
+                            node, reason="Conditional branch not taken"
+                        )
+
+        return skipped
+
+    def _find_exclusive_descendants(
+        self,
+        root_nodes: List[str],
+        workflow: WorkflowDefinition,
+        graph,
+    ) -> Set[str]:
+        """
+        Find nodes that are ONLY reachable via the given root nodes.
+
+        A node is "exclusive" if removing the root nodes from the graph
+        would make it unreachable from START.
+
+        Args:
+            root_nodes: Nodes being skipped
+            workflow: Workflow definition
+            graph: Pre-built dependency graph
+
+        Returns:
+            Set of node IDs that are exclusively reachable via root_nodes
+        """
+        root_set = set(root_nodes)
+
+        # Find all nodes reachable from START without going through root_nodes
+        start_node = workflow.get_start_node()
+        reachable_without_roots = self._find_reachable(
+            start_node, workflow, exclude=root_set
+        )
+
+        # All nodes that are NOT reachable without roots should be skipped
+        # (except the roots themselves which are handled separately)
+        all_node_ids = set(workflow.nodes.keys())
+        exclusive = all_node_ids - reachable_without_roots - root_set
+
+        # Don't skip END nodes
+        end_nodes = set(workflow.get_end_nodes())
+        exclusive -= end_nodes
+
+        return exclusive
+
+    def _find_reachable(
+        self,
+        start_node: str,
+        workflow: WorkflowDefinition,
+        exclude: Set[str],
+    ) -> Set[str]:
+        """
+        Find all nodes reachable from start_node, excluding certain nodes.
+
+        Uses BFS traversal following 'next' pointers and branch targets.
+        """
+        reachable = set()
+        queue = [start_node]
+
+        while queue:
+            node_id = queue.pop(0)
+
+            if node_id in reachable or node_id in exclude:
+                continue
+
+            reachable.add(node_id)
+
+            node_def = workflow.nodes.get(node_id)
+            if not node_def:
+                continue
+
+            # Follow 'next' pointers
+            if node_def.next:
+                next_nodes = (
+                    [node_def.next] if isinstance(node_def.next, str)
+                    else node_def.next
+                )
+                queue.extend(next_nodes)
+
+            # Follow branch targets
+            if node_def.branches:
+                for branch in node_def.branches:
+                    if branch.next:
+                        queue.append(branch.next)
+
+        return reachable

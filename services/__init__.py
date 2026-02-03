@@ -23,10 +23,12 @@ from .job_service import JobService
 from .node_service import NodeService
 from .workflow_service import WorkflowService
 from .event_service import EventService
+from .checkpoint_service import CheckpointService
 
 __all__ = [
     "JobService",
     "NodeService",
     "WorkflowService",
     "EventService",
+    "CheckpointService",
 ]

@@ -28,6 +28,7 @@ from .schemas import (
     JobListResponse,
     NodeResponse,
     TaskResultCreate,
+    CheckpointCreate,
     WorkflowResponse,
     WorkflowListResponse,
     ErrorResponse,
@@ -49,17 +50,19 @@ _workflow_service = None
 _orchestrator = None
 _pool = None
 _event_service = None
+_checkpoint_service = None
 
 
-def set_services(job_service, node_service, workflow_service, orchestrator, pool, event_service=None):
+def set_services(job_service, node_service, workflow_service, orchestrator, pool, event_service=None, checkpoint_service=None):
     """Set service instances for dependency injection."""
-    global _job_service, _node_service, _workflow_service, _orchestrator, _pool, _event_service
+    global _job_service, _node_service, _workflow_service, _orchestrator, _pool, _event_service, _checkpoint_service
     _job_service = job_service
     _node_service = node_service
     _workflow_service = workflow_service
     _orchestrator = orchestrator
     _pool = pool
     _event_service = event_service
+    _checkpoint_service = checkpoint_service
 
 
 def get_event_service():
@@ -544,6 +547,58 @@ async def receive_task_progress(request: dict):
     )
 
     return {"status": "accepted", "task_id": request["task_id"]}
+
+
+@router.post(
+    "/callbacks/checkpoint",
+    status_code=202,
+    tags=["Callbacks"],
+    responses={202: {"description": "Checkpoint accepted"}},
+)
+async def receive_checkpoint(request: CheckpointCreate):
+    """
+    Receive checkpoint from worker.
+
+    Workers call this endpoint to save progress checkpoints during
+    long-running task execution. Checkpoints enable resumption on retry.
+    """
+    from services import CheckpointService
+
+    # Use injected service if available, otherwise create one
+    if _checkpoint_service:
+        service = _checkpoint_service
+    else:
+        service = CheckpointService(_pool)
+
+    checkpoint = await service.save_checkpoint(
+        job_id=request.job_id,
+        node_id=request.node_id,
+        task_id=request.task_id,
+        phase_name=request.phase_name,
+        phase_index=request.phase_index,
+        total_phases=request.total_phases,
+        progress_current=request.progress_current,
+        progress_total=request.progress_total,
+        progress_message=request.progress_message,
+        state_data=request.state_data,
+        artifacts_completed=request.artifacts_completed,
+        memory_usage_mb=request.memory_usage_mb,
+        disk_usage_mb=request.disk_usage_mb,
+        error_count=request.error_count,
+        is_final=request.is_final,
+    )
+
+    logger.info(
+        f"Received checkpoint: {request.task_id} "
+        f"phase={request.phase_name}[{request.phase_index}] "
+        f"progress={request.progress_current}/{request.progress_total or '?'}"
+    )
+
+    return {
+        "status": "accepted",
+        "checkpoint_id": checkpoint.checkpoint_id,
+        "task_id": request.task_id,
+    }
 
 
 # ============================================================================

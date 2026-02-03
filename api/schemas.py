@@ -66,6 +66,45 @@ class TaskResultCreate(BaseModel):
     error_message: Optional[str] = Field(None, max_length=2000)
     worker_id: Optional[str] = Field(None, max_length=64)
     execution_duration_ms: Optional[int] = Field(None, ge=0)
+    checkpoint_id: Optional[str] = Field(None, max_length=64)
+
+
+class CheckpointCreate(BaseModel):
+    """Request to save a checkpoint (from worker callback)."""
+    job_id: str = Field(..., max_length=64)
+    node_id: str = Field(..., max_length=64)
+    task_id: str = Field(..., max_length=128)
+    phase_name: str = Field(..., max_length=64)
+    phase_index: int = Field(default=0, ge=0)
+    total_phases: int = Field(default=1, ge=1)
+    progress_current: int = Field(default=0, ge=0)
+    progress_total: Optional[int] = Field(None, ge=0)
+    progress_message: Optional[str] = Field(None, max_length=256)
+    state_data: Optional[Dict[str, Any]] = None
+    artifacts_completed: Optional[List[str]] = None
+    memory_usage_mb: Optional[int] = Field(None, ge=0)
+    disk_usage_mb: Optional[int] = Field(None, ge=0)
+    error_count: int = Field(default=0, ge=0)
+    is_final: bool = Field(default=False)
+
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "job_id": "job-abc123",
+                    "node_id": "process_tiles",
+                    "task_id": "job-abc123_process_tiles_0",
+                    "phase_name": "processing",
+                    "phase_index": 1,
+                    "total_phases": 3,
+                    "progress_current": 50,
+                    "progress_total": 100,
+                    "progress_message": "Processing tile 50/100",
+                    "artifacts_completed": ["tile_0.tif", "tile_1.tif"],
+                }
+            ]
+        }
+    }
 
 
 # ============================================================================

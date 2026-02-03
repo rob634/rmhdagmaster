@@ -118,6 +118,7 @@ async def lifespan(app: FastAPI):
         workflow_service=_workflow_service,
         orchestrator=_orchestrator,
         pool=pool,
+        event_service=event_service,
     )
 
     # Start orchestrator

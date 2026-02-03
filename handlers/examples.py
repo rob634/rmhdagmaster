@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 
 @register_handler(
     "echo",
-    description="Echoes input parameters back as output",
+    description="Echoes input parameters back as output (supports checkpointing)",
     queue="functionapp-tasks",
     timeout_seconds=60,
 )
@@ -41,14 +41,72 @@ async def echo_handler(ctx: HandlerContext) -> HandlerResult:
     Simple echo handler for testing.
 
     Returns the input params as output.
+
+    Supports checkpointing:
+    - If params.steps > 1, simulates multi-step execution with checkpoints
+    - On retry, resumes from last checkpoint
     """
     logger.info(f"Echo handler called with params: {ctx.params}")
 
+    # Check if multi-step mode is requested
+    total_steps = ctx.params.get("steps", 1)
+
+    if total_steps <= 1:
+        # Simple mode: just echo params
+        return HandlerResult.success_result(
+            output={
+                "echoed_params": ctx.params,
+                "handler": ctx.handler,
+                "task_id": ctx.task_id,
+            }
+        )
+
+    # Multi-step mode with checkpointing
+    start_step = 1
+    completed_steps = []
+
+    # Resume from checkpoint if available
+    if ctx.checkpoint_data:
+        start_step = ctx.checkpoint_data.get("next_step", 1)
+        completed_steps = ctx.checkpoint_data.get("completed_steps", [])
+        logger.info(f"Resuming from checkpoint: step {start_step}, completed={completed_steps}")
+
+    # Process steps
+    for step in range(start_step, total_steps + 1):
+        logger.info(f"Processing step {step}/{total_steps}")
+
+        # Report progress
+        ctx.report_progress(step, total_steps, f"Step {step} of {total_steps}")
+
+        # Simulate work
+        await asyncio.sleep(ctx.params.get("step_delay", 0.1))
+
+        # Record completion
+        completed_steps.append(f"step_{step}")
+
+        # Return checkpoint after each step except the last
+        if step < total_steps:
+            return HandlerResult.checkpoint_result(
+                phase=f"step_{step}",
+                data={
+                    "next_step": step + 1,
+                    "completed_steps": completed_steps,
+                },
+                output={
+                    "current_step": step,
+                    "total_steps": total_steps,
+                    "status": "in_progress",
+                },
+            )
+
+    # All steps complete
     return HandlerResult.success_result(
         output={
             "echoed_params": ctx.params,
             "handler": ctx.handler,
             "task_id": ctx.task_id,
+            "steps_completed": total_steps,
+            "completed_steps": completed_steps,
         }
     )
 
