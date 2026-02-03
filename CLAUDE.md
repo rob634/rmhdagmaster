@@ -295,3 +295,6 @@ conda activate azgeo
 | `docs/ARCHITECTURE.md` | System design, data flows, schemas, handlers |
 | `docs/DEPLOYMENT.md` | Azure resources, build commands, environment variables |
 | `TODO.md` | Implementation plan and status |
+| `LOOP.md` | Step-by-step orchestrator execution trace |
+| `PATTERNS.md` | Advanced DAG patterns (conditional, fan-out, fan-in) |
+| `ADVANCED.md` | Detailed implementation specs for all features |

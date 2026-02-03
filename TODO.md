@@ -188,71 +188,112 @@ node_states = await node_repo.get_all_for_job(job_id)  # Snapshot
 
 ---
 
-## Phase 1.5: Advanced Features (P2)
+## Phase 1.5: Advanced DAG Patterns (P2) 🎯 NEXT PRIORITY
 
-| ID | Feature | Effort | Impact | Status |
-|----|---------|--------|--------|--------|
-| **P2.1** | Conditional Routing | Medium | Medium | ⏳ TODO |
-| **P2.2** | Fan-Out/Fan-In | Large | High | ⏳ TODO |
-| **P2.3** | Checkpointing | Medium | Medium | ⏳ TODO |
+**Design Reference**: See `PATTERNS.md` for detailed pattern documentation.
 
-### P2.1: Conditional Routing
+| ID | Feature | Effort | Impact | Priority | Status |
+|----|---------|--------|--------|----------|--------|
+| **P2.1** | Conditional Routing | Medium | High | 1st | ⏳ TODO |
+| **P2.2** | Fan-Out | Large | High | 2nd | ⏳ TODO |
+| **P2.3** | Fan-In | Medium | High | 3rd | ⏳ TODO |
+| **P2.4** | Checkpointing | Medium | Medium | 4th | ⏳ TODO |
+
+### P2.1: Conditional Routing (Priority 1)
+
+**Use Case**: Size-based routing, skip validation, error branching.
 
 | Task | Status | File |
 |------|--------|------|
 | Implement evaluate_condition() | ⏳ TODO | `orchestrator/engine/evaluator.py` |
+| Implement _skip_branch() for untaken paths | ⏳ TODO | `services/node_service.py` |
 | Wire up conditional routing after node completion | ⏳ TODO | `orchestrator/loop.py` |
-| Implement _skip_branch() | ⏳ TODO | `orchestrator/loop.py` |
+| Handle SKIPPED status in dependency resolution | ⏳ TODO | `services/node_service.py` |
+| Add any_of support (only one branch runs) | ⏳ TODO | `services/node_service.py` |
 
-### P2.2: Fan-Out/Fan-In
+### P2.2: Fan-Out (Priority 2)
+
+**Use Case**: Tiled raster processing, chunked vector uploads, parallel analysis.
 
 | Task | Status | File |
 |------|--------|------|
-| Create FanOutExpander | ⏳ TODO | `orchestrator/engine/fan_out.py` |
-| Create FanInAggregator | ⏳ TODO | `orchestrator/engine/fan_in.py` |
-| Wire up in orchestrator loop | ⏳ TODO | `orchestrator/loop.py` |
+| Add parent_node_id, fan_out_index to NodeState | ⏳ TODO | `core/models/node.py` |
+| Create FanOutExpander class | ⏳ TODO | `orchestrator/engine/fan_out.py` |
 | Add fan_out context to templates | ⏳ TODO | `orchestrator/engine/templates.py` |
+| Wire up expansion after fan-out node completes | ⏳ TODO | `orchestrator/loop.py` |
+| Add get_by_parent() to NodeRepository | ⏳ TODO | `repositories/node_repo.py` |
 
-### P2.3: Checkpointing
+### P2.3: Fan-In (Priority 3)
+
+**Use Case**: Merge tiled results, aggregate parallel outputs.
 
 | Task | Status | File |
 |------|--------|------|
-| Add checkpoint to TaskMessage | ⏳ TODO | `core/models/task.py` |
+| Create FanInAggregator class | ⏳ TODO | `orchestrator/engine/fan_in.py` |
+| Update _dependencies_met() for dynamic nodes | ⏳ TODO | `services/node_service.py` |
+| Add fan_in context to templates | ⏳ TODO | `orchestrator/engine/templates.py` |
+| Collect all outputs for fan-in node | ⏳ TODO | `orchestrator/loop.py` |
+
+### P2.4: Checkpointing (Priority 4)
+
+**Use Case**: Resume long-running tasks after failure/timeout.
+
+| Task | Status | File |
+|------|--------|------|
+| Add checkpoint fields to TaskResult | ⏳ TODO | `core/models/task.py` |
 | Create CheckpointableHandler base | ⏳ TODO | `handlers/base.py` |
 | Handle checkpoint in result processing | ⏳ TODO | `services/node_service.py` |
 | Resume from checkpoint on retry | ⏳ TODO | `orchestrator/loop.py` |
 
 ---
 
+## Future Enhancements (Aspirational)
+
+| Feature | Description | Complexity |
+|---------|-------------|------------|
+| **Nested Sub-Workflows** | Invoke a workflow as a node in another workflow | High |
+| **Workflow Versioning** | Pin jobs to specific workflow versions | Medium |
+| **Human Approval Gates** | Pause workflow for manual approval | Medium |
+| **Dynamic Timeouts** | Set timeouts based on input data | Low |
+
+---
+
 ## Recommended Implementation Order
 
 ```
-Phase A: Foundation (Do First)
-─────────────────────────────
-1. P0.0 Fix Stale State Bug     ← CRITICAL correctness fix
-2. P0.1 Event Timeline Logging  ← Enables debugging
-3. P0.2 Retry Logic             ← Production resilience
-4. P0.3 Orchestrator Stats      ← Monitoring
+Phase A: Foundation ✅ COMPLETE
+────────────────────────────────
+1. P0.0 Fix Stale State Bug     ✅ DONE
+2. P0.1 Event Timeline Logging  ✅ DONE
+3. P0.2 Retry Logic             ✅ DONE
+4. P0.3 Orchestrator Stats      ✅ DONE
 
-Phase B: Stability
+Phase B: Advanced DAG Patterns 🎯 CURRENT
+─────────────────────────────────────────
+5. P2.1 Conditional Routing ← Size-based routing, branch skipping
+6. P2.2 Fan-Out             ← Dynamic parallel task creation
+7. P2.3 Fan-In              ← Aggregate parallel results
+8. P2.4 Checkpointing       ← Resume long-running tasks
+
+Phase C: Stability
 ──────────────────
-5. P1.1 Workflow Version Pinning ← Safe deployments
-6. P1.2 Transaction Wrapping     ← Data integrity
+9.  P1.1 Workflow Version Pinning ← Safe deployments
+10. P1.2 Transaction Wrapping     ← Data integrity
 
-Phase C: Observability
+Phase D: Observability
 ──────────────────────
-7. P3.1 Progress API    ← User visibility
-8. P3.2 Timeline API    ← Debugging UI
-9. P3.3 Metrics         ← Operations
+11. P3.1 Progress API    ← User visibility (P3.2 Timeline done)
+12. P3.3 Metrics         ← Operations dashboard
 
-Phase D: Advanced Features
-──────────────────────────
-10. P2.1 Conditional Routing ← Workflow power
-11. P2.3 Checkpointing       ← Long-running tasks
-12. P2.2 Fan-Out/Fan-In      ← Parallel processing
+Future: Aspirational
+────────────────────
+- Nested Sub-Workflows   ← Workflow composition
+- Human Approval Gates   ← Manual intervention points
 ```
 
-**See**: `ADVANCED.md` for detailed implementation code and specifications
+**See**:
+- `PATTERNS.md` for pattern design documentation
+- `ADVANCED.md` for detailed implementation code and specifications
 
 ---
 
