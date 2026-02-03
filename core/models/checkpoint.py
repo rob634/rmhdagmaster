@@ -57,10 +57,15 @@ class Checkpoint(BaseModel):
     __sql_foreign_keys__: ClassVar[Dict[str, str]] = {
         "job_id": "dagapp.dag_jobs(job_id)",
     }
-    __sql_indexes__: ClassVar[List[tuple]] = [
+    __sql_indexes__: ClassVar[List] = [
         ("idx_dag_checkpoints_job_node", ["job_id", "node_id"]),
         ("idx_dag_checkpoints_task", ["task_id"]),
-        ("idx_dag_checkpoints_latest", ["job_id", "node_id", "created_at DESC"]),
+        # For "get latest checkpoint" queries - descending on created_at
+        {
+            "name": "idx_dag_checkpoints_latest",
+            "columns": ["job_id", "node_id", "created_at"],
+            "descending": True,
+        },
     ]
 
     # =========================================================================
