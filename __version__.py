@@ -11,11 +11,11 @@ Updated manually for each release.
 """
 # Version format: major.minor.patch.build
 # Criteria for 0.2 - complete echo test works
-__version__ = "0.10.0"
+__version__ = "0.11.0"
 __version_info__ = tuple(int(x) for x in __version__.split("."))
 
 # Build metadata
-BUILD_DATE = "2026-02-06"
+BUILD_DATE = "2026-02-07"
 
 # Deployment info
 ORCHESTRATOR_IMAGE = f"rmhazureacr.azurecr.io/rmhdagmaster:v{__version__}"
