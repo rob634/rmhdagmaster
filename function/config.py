@@ -33,7 +33,7 @@ class FunctionConfig:
     # Service Bus
     service_bus_namespace: str = ""
     service_bus_connection_string: Optional[str] = None
-    job_queue_name: str = "dag-jobs"
+    job_queue_name: str = ""
 
     # Docker App URLs (for proxy)
     orchestrator_url: str = "http://localhost:8000"
@@ -58,7 +58,7 @@ class FunctionConfig:
             # Service Bus
             service_bus_namespace=os.environ.get("SERVICE_BUS_NAMESPACE", ""),
             service_bus_connection_string=os.environ.get("SERVICE_BUS_CONNECTION_STRING"),
-            job_queue_name=os.environ.get("JOB_QUEUE_NAME", "dag-jobs"),
+            job_queue_name=os.environ.get("JOB_QUEUE_NAME", ""),
             # Docker URLs
             orchestrator_url=os.environ.get("ORCHESTRATOR_URL", "http://localhost:8000"),
             worker_url=os.environ.get("WORKER_URL", "http://localhost:8001"),

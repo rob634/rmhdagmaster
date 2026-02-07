@@ -72,6 +72,8 @@ class ConfigCheck(HealthCheckPlugin):
     ORCHESTRATOR_VARS = [
         "POSTGRES_HOST",
         "POSTGRES_DB",
+        "JOB_QUEUE_NAME",
+        "DAG_WORKER_QUEUE",
     ]
 
     # Required for worker mode

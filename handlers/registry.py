@@ -162,7 +162,7 @@ def register_handler(
     name: str,
     *,
     description: str = "",
-    queue: str = "functionapp-tasks",
+    queue: str = "",
     timeout_seconds: int = 3600,
     max_retries: int = 3,
     tags: Optional[List[str]] = None,

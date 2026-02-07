@@ -106,7 +106,9 @@ async def submit_job(request: JobSubmitRequest) -> JobSubmitResponse:
     )
 
     # Get queue name from environment
-    queue_name = os.environ.get("JOB_QUEUE_NAME", "dag-jobs")
+    queue_name = os.environ.get("JOB_QUEUE_NAME")
+    if not queue_name:
+        raise HTTPException(status_code=503, detail="JOB_QUEUE_NAME not configured")
 
     # Publish to Service Bus
     try:
@@ -209,7 +211,9 @@ async def submit_jobs_batch(request: BatchSubmitRequest) -> BatchSubmitResponse:
     Uses batch send to Service Bus for better throughput.
     """
     submitted_at = datetime.utcnow()
-    queue_name = os.environ.get("JOB_QUEUE_NAME", "dag-jobs")
+    queue_name = os.environ.get("JOB_QUEUE_NAME")
+    if not queue_name:
+        raise HTTPException(status_code=503, detail="JOB_QUEUE_NAME not configured")
 
     # Create queue messages
     queue_messages = []

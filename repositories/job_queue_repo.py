@@ -69,7 +69,9 @@ class JobQueueRepository:
             config: Service Bus config. If None, loads from environment.
         """
         self._config = config or ServiceBusConfig.from_env()
-        self._queue_name = os.environ.get("JOB_QUEUE_NAME", "dag-jobs")
+        self._queue_name = os.environ.get("JOB_QUEUE_NAME")
+        if not self._queue_name:
+            raise ValueError("JOB_QUEUE_NAME environment variable is required")
         self._consumer: Optional[ServiceBusConsumer] = None
 
         logger.debug(f"JobQueueRepository initialized for queue: {self._queue_name}")

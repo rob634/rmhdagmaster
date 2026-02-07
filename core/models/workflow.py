@@ -76,7 +76,7 @@ class DependsOn(BaseModel):
 class FanOutTaskDef(BaseModel):
     """Task template for each item in a fan-out expansion."""
     handler: str = Field(..., max_length=64, description="Handler to execute for each item")
-    queue: str = Field(default="dag-worker-tasks", description="Service Bus queue")
+    queue: str = Field(default="", description="Service Bus queue (set from workflow YAML)")
     params: Dict[str, Any] = Field(default_factory=dict, description="Params with {{ item }}/{{ index }} placeholders")
     timeout_seconds: int = Field(default=3600, ge=1, le=86400)
 
@@ -97,8 +97,8 @@ class NodeDefinition(BaseModel):
         description="Handler function name (e.g., 'raster_cog_docker')"
     )
     queue: Optional[str] = Field(
-        default="functionapp-tasks",
-        description="Service Bus queue to dispatch to"
+        default=None,
+        description="Service Bus queue to dispatch to (set from workflow YAML)"
     )
     timeout_seconds: int = Field(default=3600, ge=1, le=86400)
     retry: Optional[RetryPolicy] = None

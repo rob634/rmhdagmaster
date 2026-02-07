@@ -34,9 +34,9 @@ class MessagingConfig:
     use_managed_identity: bool = False
     managed_identity_client_id: Optional[str] = None
 
-    # Queue names
-    worker_queue: str = "dag-worker-tasks"
-    result_queue: str = "dag-task-results"
+    # Queue names (MUST be set explicitly - no defaults)
+    worker_queue: str = ""
+    result_queue: str = ""
 
     # Callback configuration (alternative to result queue)
     callback_base_url: Optional[str] = None
@@ -62,10 +62,18 @@ class MessagingConfig:
             AZURE_CLIENT_ID: Optional client ID for user-assigned managed identity
 
         Common:
-            DAG_WORKER_QUEUE: Worker task queue (default: dag-worker-tasks)
-            DAG_RESULT_QUEUE: Result queue (default: dag-task-results)
+            DAG_WORKER_QUEUE: Worker task queue (REQUIRED)
+            DAG_RESULT_QUEUE: Result queue (REQUIRED)
             DAG_CALLBACK_URL: Base URL for HTTP callbacks (optional)
         """
+        worker_queue = os.environ.get("DAG_WORKER_QUEUE")
+        if not worker_queue:
+            raise ValueError(
+                "DAG_WORKER_QUEUE environment variable is required"
+            )
+
+        result_queue = os.environ.get("DAG_RESULT_QUEUE", "")
+
         use_mi = os.environ.get("USE_MANAGED_IDENTITY", "").lower() == "true"
 
         if use_mi:
@@ -78,8 +86,8 @@ class MessagingConfig:
                 use_managed_identity=True,
                 fully_qualified_namespace=fqdn,
                 managed_identity_client_id=os.environ.get("AZURE_CLIENT_ID"),
-                worker_queue=os.environ.get("DAG_WORKER_QUEUE", "dag-worker-tasks"),
-                result_queue=os.environ.get("DAG_RESULT_QUEUE", "dag-task-results"),
+                worker_queue=worker_queue,
+                result_queue=result_queue,
                 callback_base_url=os.environ.get("DAG_CALLBACK_URL"),
             )
         else:
@@ -90,8 +98,8 @@ class MessagingConfig:
                 )
             return cls(
                 connection_string=connection_string,
-                worker_queue=os.environ.get("DAG_WORKER_QUEUE", "dag-worker-tasks"),
-                result_queue=os.environ.get("DAG_RESULT_QUEUE", "dag-task-results"),
+                worker_queue=worker_queue,
+                result_queue=result_queue,
                 callback_base_url=os.environ.get("DAG_CALLBACK_URL"),
             )
 

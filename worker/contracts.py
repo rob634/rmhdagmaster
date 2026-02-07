@@ -350,8 +350,8 @@ class WorkerConfig:
     worker_id: str
     worker_type: str = "docker"  # "docker" or "functionapp"
 
-    # Queue
-    queue_name: str = "dag-worker-tasks"
+    # Queue (MUST be set explicitly - no defaults)
+    queue_name: str = ""
 
     # Connection
     service_bus_connection: Optional[str] = None
@@ -380,7 +380,7 @@ class WorkerConfig:
         return cls(
             worker_id=os.getenv("WORKER_ID", f"worker-{socket.gethostname()}"),
             worker_type=os.getenv("WORKER_TYPE", "docker"),
-            queue_name=os.getenv("WORKER_QUEUE", "dag-worker-tasks"),
+            queue_name=os.getenv("WORKER_QUEUE", ""),
             service_bus_connection=os.getenv("SERVICEBUS_CONNECTION_STRING"),
             service_bus_namespace=os.getenv("SERVICE_BUS_FQDN"),
             use_managed_identity=os.getenv("USE_MANAGED_IDENTITY", "").lower() == "true",

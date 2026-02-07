@@ -1100,7 +1100,7 @@ class Orchestrator:
                 await self._event_service.emit_node_dispatched(
                     node,
                     task_message.task_id,
-                    queue=node_def.queue or "functionapp-tasks",
+                    queue=node_def.queue or "unknown",
                     handler=node_def.handler,
                 )
 

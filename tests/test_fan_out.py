@@ -127,9 +127,9 @@ class TestFanOutTaskDef:
         assert task_def.timeout_seconds == 120
 
     def test_defaults(self):
-        """FanOutTaskDef has sensible defaults."""
+        """FanOutTaskDef has no default queue (must be explicit)."""
         task_def = FanOutTaskDef(handler="process")
-        assert task_def.queue == "dag-worker-tasks"
+        assert task_def.queue == ""
         assert task_def.params == {}
         assert task_def.timeout_seconds == 3600
 

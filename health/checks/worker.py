@@ -58,7 +58,12 @@ class WorkerHealthCheck(HealthCheckPlugin):
 
     async def check(self) -> HealthCheckResult:
         worker_url = os.environ.get("WORKER_HEALTH_URL", WORKER_HEALTH_URL)
-        expected_queue = os.environ.get("EXPECTED_WORKER_QUEUE", "dag-worker-tasks")
+        expected_queue = os.environ.get("EXPECTED_WORKER_QUEUE") or os.environ.get("DAG_WORKER_QUEUE")
+        if not expected_queue:
+            return HealthCheckResult.unhealthy(
+                message="EXPECTED_WORKER_QUEUE or DAG_WORKER_QUEUE not configured",
+                hint="Set EXPECTED_WORKER_QUEUE or DAG_WORKER_QUEUE environment variable",
+            )
 
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
