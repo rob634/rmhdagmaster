@@ -493,7 +493,11 @@ class JobRepository:
         limit: int = 10,
     ) -> List[str]:
         """
-        Reclaim jobs with stale heartbeats (orphaned by crashed orchestrators).
+        Reclaim unowned or orphaned jobs.
+
+        Picks up jobs that either:
+        - Have no owner (created via direct API, not queue)
+        - Have stale heartbeats (orphaned by crashed orchestrators)
 
         Uses atomic UPDATE with RETURNING to prevent race conditions.
         Only one orchestrator can win the reclaim for each job.
@@ -515,7 +519,10 @@ class JobRepository:
                 WITH orphans AS (
                     SELECT job_id FROM {TABLE_JOBS}
                     WHERE status IN ('pending', 'running')
-                      AND owner_heartbeat_at < NOW() - INTERVAL '%s seconds'
+                      AND (
+                          owner_id IS NULL
+                          OR owner_heartbeat_at < NOW() - INTERVAL '%s seconds'
+                      )
                     LIMIT %s
                     FOR UPDATE SKIP LOCKED
                 )

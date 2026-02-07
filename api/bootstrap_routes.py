@@ -293,6 +293,52 @@ async def run_migrations(
                         ADD COLUMN IF NOT EXISTS fan_out_index INTEGER
                     """,
                 },
+                # dag_node_states.input_params (for dynamic node retries)
+                {
+                    "table": "dag_node_states",
+                    "column": "input_params",
+                    "sql": """
+                        ALTER TABLE dagapp.dag_node_states
+                        ADD COLUMN IF NOT EXISTS input_params JSONB
+                    """,
+                },
+                # dag_node_states.checkpoint_phase
+                {
+                    "table": "dag_node_states",
+                    "column": "checkpoint_phase",
+                    "sql": """
+                        ALTER TABLE dagapp.dag_node_states
+                        ADD COLUMN IF NOT EXISTS checkpoint_phase VARCHAR(64)
+                    """,
+                },
+                # dag_node_states.checkpoint_data
+                {
+                    "table": "dag_node_states",
+                    "column": "checkpoint_data",
+                    "sql": """
+                        ALTER TABLE dagapp.dag_node_states
+                        ADD COLUMN IF NOT EXISTS checkpoint_data JSONB
+                    """,
+                },
+                # dag_node_states.checkpoint_saved_at
+                {
+                    "table": "dag_node_states",
+                    "column": "checkpoint_saved_at",
+                    "sql": """
+                        ALTER TABLE dagapp.dag_node_states
+                        ADD COLUMN IF NOT EXISTS checkpoint_saved_at TIMESTAMPTZ
+                    """,
+                },
+                # Create index for parent_node_id (fan-out children)
+                {
+                    "table": "dag_node_states",
+                    "column": "idx_parent",
+                    "sql": """
+                        CREATE INDEX IF NOT EXISTS idx_dag_node_parent
+                        ON dagapp.dag_node_states (parent_node_id)
+                        WHERE parent_node_id IS NOT NULL
+                    """,
+                },
                 # Create index for unprocessed task results
                 {
                     "table": "dag_task_results",

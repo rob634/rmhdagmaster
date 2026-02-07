@@ -51,12 +51,20 @@ class TaskResultRepository:
                 f"""
                 INSERT INTO {TABLE_TASKS} (
                     task_id, job_id, node_id, status, output, error_message,
-                    worker_id, execution_duration_ms, reported_at
+                    worker_id, execution_duration_ms, reported_at, processed
                 ) VALUES (
                     %(task_id)s, %(job_id)s, %(node_id)s, %(status)s,
                     %(output)s, %(error_message)s, %(worker_id)s,
-                    %(execution_duration_ms)s, %(reported_at)s
+                    %(execution_duration_ms)s, %(reported_at)s, false
                 )
+                ON CONFLICT (task_id) DO UPDATE SET
+                    status = EXCLUDED.status,
+                    output = EXCLUDED.output,
+                    error_message = EXCLUDED.error_message,
+                    worker_id = EXCLUDED.worker_id,
+                    execution_duration_ms = EXCLUDED.execution_duration_ms,
+                    reported_at = EXCLUDED.reported_at,
+                    processed = false
                 """,
                 {
                     "task_id": result.task_id,
