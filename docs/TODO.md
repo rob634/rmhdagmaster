@@ -1,6 +1,6 @@
 # TODO - rmhdagmaster
 
-**Last Updated**: 06 FEB 2026
+**Last Updated**: 07 FEB 2026
 
 > Detailed specs, code examples, and task checklists: see `IMPLEMENTATION.md`.
 > System design and architecture: see `ARCHITECTURE.md`.
@@ -36,6 +36,10 @@
 - Jinja2 template engine wired into dispatch path (`{{ inputs.x }}`, `{{ nodes.y.output.z }}`)
 - Fan-out: dynamic child node creation from arrays, batch dispatch
 - Fan-in: aggregation of child results (collect, concat, sum, first, last)
+- No-defaults policy: all queue names require explicit env vars (no silent fallbacks)
+- CLI test tool (`tools/submit_job.py`) for queue-based job submission
+- Echo test verified end-to-end in Azure via queue submission (v0.10.0)
+- Fan-out/fan-in test verified end-to-end in Azure (3-item fan-out, 8 nodes, aggregation)
 - 64 unit tests across 3 test files
 
 ---
@@ -48,7 +52,7 @@
 |---|------|--------|----------|
 | 1 | **Worker Integration** | Done | Sec 6 |
 | 2 | **Template Resolution** | Done -- Jinja2 engine wired into dispatch path | Sec 5 |
-| 3 | **First Real Workflow** | Pending -- echo/pipeline test workflows pass, real raster workflow next | Sec 7 |
+| 3 | **First Real Workflow** | In Progress -- echo + fan-out verified E2E in Azure (07 FEB); raster validate next | Sec 7 |
 
 ### Tier 2: Parallel Processing -- DONE (06 FEB 2026)
 
@@ -65,9 +69,10 @@ Connect B2B applications to the DAG engine.
 
 | # | Item | What It Is | IMPL Ref |
 |---|------|-----------|----------|
-| 6 | **GeospatialAsset model** | Link requests -> assets -> jobs | Sec 5.1 |
-| 7 | **API Integration** | External-facing submit/status/cancel on orchestrator | Sec 8 |
-| 8 | **Callback architecture** | POST results back to B2B apps on job completion | Sec 8 |
+| 6 | **Retry / Timeout / Error Handling** | Robust failure recovery, timeout detection | Sec 2 |
+| 7 | **GeospatialAsset model** | Link requests -> assets -> jobs | Sec 5.1 |
+| 8 | **API Integration** | External-facing submit/status/cancel on orchestrator | Sec 8 |
+| 9 | **Callback architecture** | POST results back to B2B apps on job completion | Sec 8 |
 
 ### Tier 4: Observability & Hardening
 
@@ -75,29 +80,31 @@ Polish and operational visibility.
 
 | # | Item | What It Is | IMPL Ref |
 |---|------|-----------|----------|
-| 9 | **Progress API** | Real-time job/node progress | Sec 4.1 |
-| 10 | **Metrics Dashboard** | Workflow stats, failure rates | Sec 4.2 |
-| 11 | **Data Integrity** | Pydantic schemas on raw dict endpoints | Sec 5.3 |
-| 12 | **Version Pinning** | Snapshot workflow YAML at job creation | Sec 2.1 |
-| 13 | **Transaction Wrapping** | Wrap multi-step DB updates atomically | Sec 2.2 |
+| 10 | **Progress API** | Real-time job/node progress | Sec 4.1 |
+| 11 | **Metrics Dashboard** | Workflow stats, failure rates | Sec 4.2 |
+| 12 | **Data Integrity** | Pydantic schemas on raw dict endpoints | Sec 5.3 |
+| 13 | **Version Pinning** | Snapshot workflow YAML at job creation | Sec 2.1 |
+| 14 | **Transaction Wrapping** | Wrap multi-step DB updates atomically | Sec 2.2 |
 
 ### Tier 5: Migration & Future
 
 | # | Item | What It Is | IMPL Ref |
 |---|------|-----------|----------|
-| 14 | **Port remaining workflows** | Vector ETL, FATHOM flood processing | Sec 7 |
-| 15 | **Migration & Cutover** | Route all traffic to DAG, deprecate legacy | Sec 9 |
-| 16 | **Web UI** | Visualize DAGs, view job runs | Sec 10 |
-| 17 | **H3 Network Synthesis** | Hexagonal aggregation pipelines | Sec 11 |
+| 15 | **Port remaining workflows** | Vector ETL, FATHOM flood processing | Sec 7 |
+| 16 | **Migration & Cutover** | Route all traffic to DAG, deprecate legacy | Sec 9 |
+| 17 | **Web UI** | Visualize DAGs, view job runs | Sec 10 |
+| 18 | **H3 Network Synthesis** | Hexagonal aggregation pipelines | Sec 11 |
 
 ---
 
 ## Known Gaps
 
 - [ ] Test coverage (3 test files / 64 tests for ~118 source files -- growing but still minimal)
+- [ ] Function App not yet deployed to Azure as Function App (code complete, tested via Docker orchestrator)
 - [ ] Function App RBAC not configured (Service Bus sender, PG read)
 - [ ] CI/CD pipeline not built (GitHub Actions workflow spec exists in IMPL)
-- [ ] Function App not yet deployed to Azure (local testing pending)
+- [ ] Retry/timeout logic not yet hardened (basic retry exists, timeout detection needs work)
+- [ ] Transaction wrapping for multi-step DB updates (crash between steps = inconsistent state)
 
 ---
 

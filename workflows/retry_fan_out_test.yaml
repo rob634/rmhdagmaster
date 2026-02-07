@@ -1,0 +1,53 @@
+# ============================================================================
+# RETRY FAN-OUT TEST WORKFLOW
+# ============================================================================
+# Fan-out with flaky children to test retry on dynamic nodes.
+# Each child has a 30% failure rate with 5 retry attempts.
+# Probability of any single child failing all 6 attempts = 0.3^6 = 0.07%.
+#
+# Submit with:
+#   python tools/submit_job.py retry_fan_out_test '{"item_list": ["alpha", "bravo", "charlie"]}'
+# ============================================================================
+
+workflow_id: retry_fan_out_test
+name: Retry Fan-Out Test
+version: 1
+description: Fan-out with flaky children — tests retry on dynamic nodes
+
+inputs:
+  item_list:
+    type: array
+    required: true
+
+nodes:
+  start:
+    type: start
+    next: prepare
+
+  prepare:
+    type: task
+    handler: echo
+    params:
+      item_list: "{{ inputs.item_list }}"
+    next: split
+
+  split:
+    type: fan_out
+    source: "{{ nodes.prepare.output.echoed_params.item_list }}"
+    task:
+      handler: flaky_echo
+      queue: dag-worker-tasks
+      params:
+        item_value: "{{ item }}"
+        item_index: "{{ index }}"
+        failure_rate: "0.3"
+      timeout_seconds: 30
+    next: aggregate
+
+  aggregate:
+    type: fan_in
+    aggregation: collect
+    next: end
+
+  end:
+    type: end

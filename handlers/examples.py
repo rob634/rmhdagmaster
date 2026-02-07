@@ -15,6 +15,7 @@ These can be used for testing and as templates for real handlers.
 
 import asyncio
 import logging
+import random
 from typing import Any, Dict
 
 from handlers.registry import (
@@ -171,6 +172,45 @@ async def fail_handler(ctx: HandlerContext) -> HandlerResult:
     return HandlerResult.failure_result(error_message)
 
 
+@register_handler(
+    "flaky_echo",
+    description="Echo handler with configurable failure rate (for testing retries)",
+    timeout_seconds=60,
+)
+async def flaky_echo_handler(ctx: HandlerContext) -> HandlerResult:
+    """
+    Echo handler that fails randomly at a configurable rate.
+
+    Used for testing retry logic. With failure_rate=0.2 and max_retries=5,
+    probability of all 6 attempts failing = 0.2^6 = 0.000064 (near zero).
+
+    Params:
+        failure_rate: Probability of failure per attempt (0.0-1.0, default 0.2)
+    """
+    failure_rate = float(ctx.params.get("failure_rate", 0.2))
+
+    if random.random() < failure_rate:
+        logger.warning(
+            f"Flaky echo: random failure (rate={failure_rate}, "
+            f"attempt={ctx.retry_count})"
+        )
+        return HandlerResult.failure_result(
+            f"Random failure (rate={failure_rate}, attempt={ctx.retry_count})"
+        )
+
+    logger.info(
+        f"Flaky echo: success (rate={failure_rate}, attempt={ctx.retry_count})"
+    )
+    return HandlerResult.success_result(
+        output={
+            "echoed_params": ctx.params,
+            "retry_count": ctx.retry_count,
+            "task_id": ctx.task_id,
+            "handler": ctx.handler,
+        }
+    )
+
+
 # ============================================================================
 # CHECKPOINT EXAMPLE
 # ============================================================================
@@ -308,6 +348,7 @@ __all__ = [
     "hello_world_handler",
     "sleep_handler",
     "fail_handler",
+    "flaky_echo_handler",
     "multi_phase_handler",
     "size_check_handler",
     "chunk_processor_handler",

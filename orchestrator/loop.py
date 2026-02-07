@@ -70,6 +70,7 @@ class Orchestrator:
     HEARTBEAT_INTERVAL_SEC = int(os.environ.get("HEARTBEAT_INTERVAL_SEC", "30"))
     ORPHAN_SCAN_INTERVAL_SEC = int(os.environ.get("ORPHAN_SCAN_INTERVAL_SEC", "60"))
     ORPHAN_THRESHOLD_SEC = int(os.environ.get("ORPHAN_THRESHOLD_SEC", "120"))
+    DEFAULT_TASK_TIMEOUT_SEC = int(os.environ.get("DEFAULT_TASK_TIMEOUT_SEC", "3600"))
 
     def __init__(
         self,
@@ -442,6 +443,9 @@ class Orchestrator:
                 f"Workflow not found: {job.workflow_id}",
             )
             return
+
+        # Check for stuck nodes (timeout detection)
+        await self._check_stuck_nodes(job, workflow)
 
         # Check dependencies and mark nodes ready
         await self.node_service.check_and_ready_nodes(job.job_id, workflow)
@@ -1113,6 +1117,88 @@ class Orchestrator:
                     await self._event_service.emit_job_started(job.job_id, node.node_id)
 
         return dispatch_success
+
+    async def _check_stuck_nodes(
+        self,
+        job: Job,
+        workflow: WorkflowDefinition,
+    ) -> int:
+        """
+        Check for nodes stuck in DISPATCHED/RUNNING past their timeout.
+
+        Marks timed-out nodes as FAILED, then auto-retries if eligible.
+        Runs every cycle per-job so timeout detection is within 1-2 seconds
+        of the actual timeout threshold.
+
+        Args:
+            job: Job to check
+            workflow: Workflow definition for timeout config
+
+        Returns:
+            Number of nodes timed out
+        """
+        node_repo = NodeRepository(self.pool)
+        all_nodes = await node_repo.get_all_for_job(job.job_id)
+        now = datetime.utcnow()
+        timed_out = 0
+
+        for node in all_nodes:
+            if node.status not in (NodeStatus.DISPATCHED, NodeStatus.RUNNING):
+                continue
+
+            # Determine timeout from workflow definition
+            timeout_sec = self.DEFAULT_TASK_TIMEOUT_SEC
+            node_def = workflow.nodes.get(node.node_id)
+            if node_def and node_def.timeout_seconds:
+                timeout_sec = node_def.timeout_seconds
+            elif node.is_dynamic and node.parent_node_id:
+                # Dynamic children use parent fan-out's task timeout
+                parent_def = workflow.nodes.get(node.parent_node_id)
+                if parent_def and parent_def.task:
+                    timeout_sec = parent_def.task.timeout_seconds
+
+            # Check age against timeout
+            check_time = node.started_at or node.dispatched_at
+            if not check_time:
+                continue
+
+            elapsed = (now - check_time).total_seconds()
+            if elapsed <= timeout_sec:
+                continue
+
+            # Node has timed out
+            error_msg = f"Task timed out after {timeout_sec}s (elapsed: {elapsed:.0f}s)"
+            node.mark_failed(error_msg)
+            logger.warning(
+                f"Timeout: node {node.node_id} in job {job.job_id} "
+                f"({node.status.value} for {elapsed:.0f}s, limit {timeout_sec}s)"
+            )
+
+            # Emit NODE_FAILED event for timeout
+            can_retry = node.retry_count < node.max_retries
+            if self._event_service:
+                await self._event_service.emit_node_failed(
+                    node, error_msg, can_retry
+                )
+
+            # Auto-retry if eligible (same logic as process_task_result)
+            if can_retry and node.prepare_retry():
+                logger.info(
+                    f"Node {node.node_id} prepared for retry after timeout "
+                    f"(attempt {node.retry_count}/{node.max_retries})"
+                )
+                if self._event_service:
+                    await self._event_service.emit_node_retry(node)
+
+            # Persist the state change (FAILED or READY after retry)
+            success = await node_repo.update(node)
+            if success:
+                timed_out += 1
+
+        if timed_out > 0:
+            logger.info(f"Timed out {timed_out} stuck nodes in job {job.job_id}")
+
+        return timed_out
 
     async def _check_job_completion(self, job: Job) -> None:
         """

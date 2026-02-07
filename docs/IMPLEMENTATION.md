@@ -1,6 +1,6 @@
 # rmhdagmaster Implementation Guide
 
-**Last Updated**: 06 FEB 2026
+**Last Updated**: 07 FEB 2026
 
 > This document contains detailed implementation specs, code examples, and task checklists.
 > For system architecture and design, see `ARCHITECTURE.md`.
@@ -470,7 +470,7 @@ nodes:
 ```python
 class FanOutTaskDef(BaseModel):
     handler: str = Field(..., max_length=64)
-    queue: str = Field(default="dag-worker-tasks")
+    queue: str = Field(default="")  # Must be set explicitly in workflow YAML
     params: Dict[str, Any] = Field(default_factory=dict)
     timeout_seconds: int = Field(default=3600, ge=1, le=86400)
 ```
@@ -875,13 +875,13 @@ async def execute_task(self, message: TaskMessage) -> TaskResult:
 
 | Task | Status | File |
 |------|--------|------|
-| Define task format | [ ] | Document JSON schema |
-| Worker detection | [ ] | Workers detect DAG vs legacy task |
-| Result reporting | [ ] | Workers write to dag_task_results |
+| Define task format | [x] | `core/models/task.py` TaskMessage model |
+| Worker detection | [x] | Workers process DAG TaskMessage format |
+| Result reporting | [x] | Workers POST to `/api/v1/callbacks/task-result` (UPSERT) |
 | Dual-mode workers | [ ] | Support both legacy and DAG |
 | Function App changes | [ ] | Modify rmhazuregeoapi for DAG support |
-| Docker Worker changes | [ ] | Modify rmhheavyapi for DAG support |
-| End-to-end test | [ ] | Real task execution via workers |
+| Docker Worker changes | [x] | rmhdagworker deployed and processing tasks |
+| End-to-end test | [x] | Echo + fan-out verified in Azure (07 FEB) |
 
 ---
 
@@ -927,11 +927,11 @@ nodes:
 | Task | Status | File |
 |------|--------|------|
 | Raster workflow | [ ] | Port process_raster_docker to YAML |
-| Conditional routing | [ ] | Size-based routing |
+| Conditional routing | [x] | Size-based routing (verified in tests) |
 | Vector workflow | [ ] | Port vector_docker_etl to YAML |
-| Fan-out support | [ ] | Tiled raster with N parallel tasks |
+| Fan-out support | [x] | 3-item fan-out verified E2E in Azure (07 FEB) |
 | FATHOM workflow | [ ] | Complex multi-stage flood data |
-| Template resolution | [ ] | All `{{ }}` expressions work |
+| Template resolution | [x] | Jinja2 engine wired into dispatch (`{{ inputs.x }}`, `{{ nodes.y.output.z }}`) |
 | Error handling | [ ] | Failed tasks retry correctly |
 | Timeout detection | [ ] | Stuck tasks detected within 60 seconds |
 
@@ -1692,7 +1692,7 @@ Thin wrapper around `ServiceBusConsumer` with `JobQueueMessage` type binding:
 class JobQueueRepository:
     def __init__(self, config=None):
         self._config = config or ServiceBusConfig.from_env()
-        self._queue_name = os.environ.get("JOB_QUEUE_NAME", "dag-jobs")
+        self._queue_name = os.environ.get("JOB_QUEUE_NAME")  # Required - no default
         self._consumer = None
 
     async def connect(self) -> None: ...
@@ -1908,6 +1908,15 @@ Replaced single-leader model with competing consumers:
 - Fan-in aggregation (collect, concat, sum, first, last)
 - 64 unit tests across 3 test files
 
+### Phase 2.1: Azure Verification + Hardening (07 FEB 2026)
+
+- Deployed v0.10.0 to Azure (orchestrator + worker)
+- Echo test verified end-to-end via queue submission (`tools/submit_job.py`)
+- Fan-out/fan-in test verified: 3-item fan-out → 8 total nodes → aggregation collected 3 results
+- Bug fixes: task_repo UPSERT, job_repo orphan scan SQL, bootstrap migrations for new columns
+- **No-defaults policy**: Removed all default queue names across 12 files. Missing queue config causes ValueError at startup, 503 at request time, UNHEALTHY in health checks. Affected files: `messaging/config.py`, `worker/contracts.py`, `repositories/job_queue_repo.py`, `function/config.py`, `function/blueprints/gateway_bp.py`, `gateway/routes.py`, `health/checks/startup.py`, `health/checks/worker.py`, `core/models/workflow.py`, `handlers/registry.py`, `orchestrator/loop.py`
+- CLI test tool: `tools/submit_job.py` — submits JobQueueMessage to Service Bus, supports `--poll` for status tracking
+
 ### Database Schema Deployment (28 JAN 2026)
 
 ```
@@ -2018,6 +2027,7 @@ FUTURE HANDLERS (to build)
 | Bootstrap API | `api/bootstrap_routes.py` |
 | Function App entry | `function_app.py` |
 | Function blueprints | `function/blueprints/*.py` |
+| CLI test tool | `tools/submit_job.py` |
 
 ### Files To Be Created
 
@@ -2073,11 +2083,15 @@ jobs:
 
 | App | RUN_MODE | WORKER_TYPE | WORKER_QUEUE | Instances |
 |-----|----------|-------------|--------------|-----------|
-| dag-orchestrator | orchestrator | - | - | 1+ (always on) |
-| dag-worker-light | worker | functionapp | functionapp-tasks | 0-10 (auto) |
-| dag-worker-heavy | worker | docker | container-tasks | 1-5 |
+| rmhdagmaster | orchestrator | - | DAG_WORKER_QUEUE=dag-worker-tasks | 1+ (always on) |
+| rmhdagworker | worker | docker | WORKER_QUEUE=dag-worker-tasks | 1-5 |
+
+**Queue Configuration** (no defaults — all must be explicitly set):
+- `JOB_QUEUE_NAME=dag-jobs` — Gateway → Orchestrator job submission
+- `DAG_WORKER_QUEUE=dag-worker-tasks` — Orchestrator → Worker task dispatch
+- `WORKER_QUEUE=dag-worker-tasks` — Worker listens on this queue
 
 ---
 
-*Document generated: 06 FEB 2026*
+*Document generated: 07 FEB 2026*
 *Sources: ADVANCED.md, FUNCTION_APP_PLAN.md, TODO.md, MULTI_ORCH_IMPL_PLAN.md, UI_PLAN.md, H3.md*
