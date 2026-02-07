@@ -49,9 +49,9 @@ nodes:
     queue: dag-worker-tasks
     description: Multi-step echo with checkpointing
     params:
-      message: "{{ input.message }}"
-      steps: "{{ input.steps }}"
-      step_delay: "{{ input.step_delay }}"
+      message: "{{ inputs.message }}"
+      steps: "{{ inputs.steps }}"
+      step_delay: "{{ inputs.step_delay }}"
     timeout_seconds: 300
     retry:
       max_attempts: 5

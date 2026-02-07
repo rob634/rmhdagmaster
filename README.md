@@ -52,17 +52,18 @@ az webapp config container set --name rmhdagmaster \
 
 ---
 
-## Architecture Documentation
+## Documentation
 
 | Document | Description |
 |----------|-------------|
-| [ARCHITECTURE.md](docs/ARCHITECTURE.md) | System architecture, DAG model, component integration |
-| [B2B_INTEGRATION.md](docs/B2B_INTEGRATION.md) | B2B identity decoupling, versioning concepts |
-| [AZURE_SETUP.md](docs/AZURE_SETUP.md) | Azure configuration, RBAC, environment setup |
+| [ARCHITECTURE.md](docs/ARCHITECTURE.md) | System design, data flows, schemas, patterns, deployment |
+| [IMPLEMENTATION.md](docs/IMPLEMENTATION.md) | Detailed specs, code examples, task checklists |
+| [TODO.md](docs/TODO.md) | Progress tracking and next priorities |
+| [CLAUDE.md](CLAUDE.md) | Project conventions, code patterns, quick reference |
 
 ### Critical Concepts
 
-1. **B2B ID Decoupling**: External identifiers (DDH's dataset/resource/version) are stored as metadata, never as primary keys. See [B2B_INTEGRATION.md](docs/B2B_INTEGRATION.md).
+1. **B2B ID Decoupling**: External identifiers (DDH's dataset/resource/version) are stored as metadata, never as primary keys. See ARCHITECTURE.md Section 13.
 
 2. **Revision vs Semantic Version**: We track operational revisions (rollback). B2B apps own semantic versioning (content lineage). These are independent concepts.
 
@@ -116,10 +117,9 @@ rmhdagmaster/
 ├── static/                 # CSS, JS assets
 ├── ui/                     # UI utilities
 │
-└── docs/                   # Documentation
-    ├── ARCHITECTURE.md
-    ├── B2B_INTEGRATION.md
-    └── AZURE_SETUP.md
+├── ARCHITECTURE.md         # System architecture (consolidated)
+├── IMPLEMENTATION.md       # Implementation specs (consolidated)
+└── TODO.md                 # Progress tracking
 ```
 
 ---
@@ -169,7 +169,7 @@ rmhdagmaster/
 | `AUTO_BOOTSTRAP_SCHEMA` | `false` | Deploy schema on startup |
 | `LOG_LEVEL` | `INFO` | Logging level |
 
-See [AZURE_SETUP.md](docs/AZURE_SETUP.md) for complete configuration.
+See `docs/ARCHITECTURE.md` Section 15 for complete deployment and configuration details.
 
 ---
 

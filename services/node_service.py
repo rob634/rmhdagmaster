@@ -22,7 +22,7 @@ from typing import Dict, Any, Optional, List, Set, Tuple
 
 from psycopg_pool import AsyncConnectionPool
 
-from core.models import NodeState, TaskResult, WorkflowDefinition, NodeDefinition
+from core.models import NodeState, TaskResult, WorkflowDefinition, NodeDefinition, NodeType
 from core.contracts import NodeStatus, TaskStatus
 from repositories import NodeRepository, TaskResultRepository
 from .workflow_service import WorkflowService
@@ -88,10 +88,22 @@ class NodeService:
         nodes_by_id = {n.node_id: n for n in all_nodes}
 
         # Find completed node IDs
-        completed_nodes: Set[str] = {
-            n.node_id for n in all_nodes
-            if n.status in (NodeStatus.COMPLETED, NodeStatus.SKIPPED)
-        }
+        # For FAN_OUT nodes: only count as completed if ALL children are also terminal
+        completed_nodes: Set[str] = set()
+        for n in all_nodes:
+            if n.status not in (NodeStatus.COMPLETED, NodeStatus.SKIPPED):
+                continue
+            # Check if this is a FAN_OUT node with pending children
+            node_def = workflow.nodes.get(n.node_id)
+            if node_def and node_def.type == NodeType.FAN_OUT:
+                children_done = await self.node_repo.all_children_terminal(
+                    job_id, n.node_id
+                )
+                if children_done:
+                    completed_nodes.add(n.node_id)
+                # else: FAN_OUT stays out of completed_nodes, blocking FAN_IN
+            else:
+                completed_nodes.add(n.node_id)
 
         # Check each pending node
         newly_ready: List[NodeState] = []
@@ -170,6 +182,9 @@ class NodeService:
             )
 
         if result.status == TaskStatus.COMPLETED:
+            # Ensure node transitions through RUNNING before COMPLETED
+            if node.status == NodeStatus.DISPATCHED:
+                node.mark_running()
             node.mark_completed(result.output)
             logger.info(f"Node {node.node_id} completed successfully")
 
@@ -319,6 +334,11 @@ class NodeService:
         Returns:
             True if all dependencies are satisfied
         """
+        # Dynamic nodes (created by fan-out) have no graph-level dependencies
+        # Their "dependency" (the fan-out expansion) was satisfied at creation time
+        if node_id not in workflow.nodes:
+            return True
+
         # Check explicit dependencies
         if node_def.depends_on:
             if node_def.depends_on.all_of:

@@ -1,0 +1,90 @@
+# ============================================================================
+# DATA PIPELINE TEST WORKFLOW
+# ============================================================================
+# Multi-node workflow proving node-to-node data passing via templates.
+# START -> step_one (echo) -> step_two (echo using step_one's output) -> END
+#
+# Tests that:
+# 1. {{ inputs.x }} resolves from job input parameters
+# 2. {{ nodes.step_one.output.echoed_params.message }} resolves from
+#    a completed upstream node's output
+# 3. Data flows correctly through the full pipeline
+# ============================================================================
+
+workflow_id: data_pipeline_test
+name: Data Pipeline Test
+version: 1
+description: Multi-node workflow testing node-to-node data passing via templates
+
+inputs:
+  message:
+    type: string
+    required: true
+    description: Message to pass through the pipeline
+  extra_tag:
+    type: string
+    required: false
+    default: test-run
+    description: Tag to verify in step_two output
+
+nodes:
+  start:
+    type: start
+    description: Workflow entry point
+    next: step_one
+
+  # Stage 1: Echo input params — output will be { echoed_params: { message, extra_tag } }
+  step_one:
+    type: task
+    handler: echo
+    queue: dag-worker-tasks
+    description: Echo input params (provides output for step_two)
+    params:
+      message: "{{ inputs.message }}"
+      extra_tag: "{{ inputs.extra_tag }}"
+    timeout_seconds: 60
+    retry:
+      max_attempts: 2
+      backoff: fixed
+      initial_delay_seconds: 5
+    next: step_two
+
+  # Stage 2: Echo again, but this time pull data from step_one's output
+  step_two:
+    type: task
+    handler: echo
+    queue: dag-worker-tasks
+    description: Echo values resolved from step_one output
+    params:
+      from_upstream: "{{ nodes.step_one.output.echoed_params.message }}"
+      tag_check: "{{ nodes.step_one.output.echoed_params.extra_tag }}"
+      original_input: "{{ inputs.message }}"
+    timeout_seconds: 60
+    retry:
+      max_attempts: 2
+      backoff: fixed
+      initial_delay_seconds: 5
+    next: end
+
+  end:
+    type: end
+    description: Workflow complete — step_two output proves data flowed through
+
+# ============================================================================
+# EXPECTED BEHAVIOR
+# ============================================================================
+#
+# Submit with: { "message": "hello world", "extra_tag": "tier1" }
+#
+# step_one receives:
+#   params = { "message": "hello world", "extra_tag": "tier1" }
+#   output = { "echoed_params": { "message": "hello world", "extra_tag": "tier1" } }
+#
+# step_two receives (after template resolution):
+#   params = { "from_upstream": "hello world", "tag_check": "tier1", "original_input": "hello world" }
+#   output = { "echoed_params": { "from_upstream": "hello world", "tag_check": "tier1", "original_input": "hello world" } }
+#
+# Verification:
+#   step_two.output.echoed_params.from_upstream == "hello world"
+#   (proves {{ nodes.step_one.output.echoed_params.message }} resolved correctly)
+# ============================================================================

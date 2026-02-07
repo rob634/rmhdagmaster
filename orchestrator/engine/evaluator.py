@@ -403,18 +403,14 @@ class FanOutHandler:
         source_expr: str,
         context: Dict[str, Any],
     ) -> Any:
-        """Resolve source expression to get the array."""
-        # Simple dot notation resolution
-        parts = source_expr.replace("{{ ", "").replace(" }}", "").split(".")
-        value = context
-
-        for part in parts:
-            if isinstance(value, dict):
-                value = value.get(part)
-            else:
-                return None
-
-        return value
+        """Resolve source expression to get the array using Jinja2."""
+        from orchestrator.engine.templates import TemplateResolver
+        resolver = TemplateResolver()
+        try:
+            return resolver._resolve_string(source_expr, context)
+        except Exception as e:
+            logger.warning(f"Failed to resolve fan-out source '{source_expr}': {e}")
+            return None
 
     def _expand_params(
         self,

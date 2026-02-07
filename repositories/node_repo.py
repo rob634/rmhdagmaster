@@ -48,11 +48,15 @@ class NodeRepository:
                 f"""
                 INSERT INTO {TABLE_NODES} (
                     job_id, node_id, status, task_id, output, error_message,
-                    retry_count, created_at, started_at, completed_at
+                    retry_count, max_retries, created_at, dispatched_at,
+                    started_at, completed_at, updated_at,
+                    parent_node_id, fan_out_index, input_params
                 ) VALUES (
                     %(job_id)s, %(node_id)s, %(status)s, %(task_id)s,
-                    %(output)s, %(error_message)s, %(retry_count)s,
-                    %(created_at)s, %(started_at)s, %(completed_at)s
+                    %(output)s, %(error_message)s, %(retry_count)s, %(max_retries)s,
+                    %(created_at)s, %(dispatched_at)s, %(started_at)s,
+                    %(completed_at)s, %(updated_at)s,
+                    %(parent_node_id)s, %(fan_out_index)s, %(input_params)s
                 )
                 """,
                 {
@@ -63,9 +67,15 @@ class NodeRepository:
                     "output": Json(node.output) if node.output else None,
                     "error_message": node.error_message,
                     "retry_count": node.retry_count,
+                    "max_retries": node.max_retries,
                     "created_at": node.created_at,
+                    "dispatched_at": node.dispatched_at,
                     "started_at": node.started_at,
                     "completed_at": node.completed_at,
+                    "updated_at": node.updated_at,
+                    "parent_node_id": node.parent_node_id,
+                    "fan_out_index": node.fan_out_index,
+                    "input_params": Json(node.input_params) if node.input_params else None,
                 },
             )
             logger.debug(f"Created node {node.node_id} for job {node.job_id}")
@@ -91,11 +101,15 @@ class NodeRepository:
                         f"""
                         INSERT INTO {TABLE_NODES} (
                             job_id, node_id, status, task_id, output, error_message,
-                            retry_count, created_at, started_at, completed_at
+                            retry_count, max_retries, created_at, dispatched_at,
+                            started_at, completed_at, updated_at,
+                            parent_node_id, fan_out_index, input_params
                         ) VALUES (
                             %(job_id)s, %(node_id)s, %(status)s, %(task_id)s,
-                            %(output)s, %(error_message)s, %(retry_count)s,
-                            %(created_at)s, %(started_at)s, %(completed_at)s
+                            %(output)s, %(error_message)s, %(retry_count)s, %(max_retries)s,
+                            %(created_at)s, %(dispatched_at)s, %(started_at)s,
+                            %(completed_at)s, %(updated_at)s,
+                            %(parent_node_id)s, %(fan_out_index)s, %(input_params)s
                         )
                         """,
                         {
@@ -106,9 +120,15 @@ class NodeRepository:
                             "output": Json(node.output) if node.output else None,
                             "error_message": node.error_message,
                             "retry_count": node.retry_count,
+                            "max_retries": node.max_retries,
                             "created_at": node.created_at,
+                            "dispatched_at": node.dispatched_at,
                             "started_at": node.started_at,
                             "completed_at": node.completed_at,
+                            "updated_at": node.updated_at,
+                            "parent_node_id": node.parent_node_id,
+                            "fan_out_index": node.fan_out_index,
+                            "input_params": Json(node.input_params) if node.input_params else None,
                         },
                     )
             logger.info(f"Created {len(nodes)} nodes for job {nodes[0].job_id}")
@@ -443,6 +463,62 @@ class NodeRepository:
             rows = await result.fetchall()
             return {row["status"]: row["count"] for row in rows}
 
+    async def get_children_by_parent(
+        self,
+        job_id: str,
+        parent_node_id: str,
+    ) -> List[NodeState]:
+        """
+        Get all dynamic child nodes created by a fan-out node.
+
+        Args:
+            job_id: Job identifier
+            parent_node_id: The fan-out node that created these children
+
+        Returns:
+            List of child NodeState instances ordered by fan_out_index
+        """
+        async with self.pool.connection() as conn:
+            conn.row_factory = dict_row
+            result = await conn.execute(
+                f"""
+                SELECT * FROM {TABLE_NODES}
+                WHERE job_id = %s AND parent_node_id = %s
+                ORDER BY fan_out_index
+                """,
+                (job_id, parent_node_id),
+            )
+            rows = await result.fetchall()
+            return [self._row_to_node(row) for row in rows]
+
+    async def all_children_terminal(
+        self,
+        job_id: str,
+        parent_node_id: str,
+    ) -> bool:
+        """
+        Check if all dynamic children of a fan-out node are terminal.
+
+        Args:
+            job_id: Job identifier
+            parent_node_id: The fan-out parent node
+
+        Returns:
+            True if all children are completed/failed/skipped
+        """
+        async with self.pool.connection() as conn:
+            conn.row_factory = dict_row
+            result = await conn.execute(
+                f"""
+                SELECT COUNT(*) as count FROM {TABLE_NODES}
+                WHERE job_id = %s AND parent_node_id = %s
+                AND status NOT IN ('completed', 'failed', 'skipped')
+                """,
+                (job_id, parent_node_id),
+            )
+            row = await result.fetchone()
+            return row["count"] == 0
+
     def _row_to_node(self, row: Dict[str, Any]) -> NodeState:
         """Convert database row to NodeState model."""
         return NodeState(
@@ -461,5 +537,6 @@ class NodeRepository:
             updated_at=row["updated_at"],
             parent_node_id=row.get("parent_node_id"),
             fan_out_index=row.get("fan_out_index"),
+            input_params=row.get("input_params"),
             version=row.get("version", 1),
         )

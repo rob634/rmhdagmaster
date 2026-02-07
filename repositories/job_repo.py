@@ -50,12 +50,14 @@ class JobRepository:
                 INSERT INTO {TABLE_JOBS} (
                     job_id, workflow_id, status, input_params, result_data,
                     error_message, created_at, started_at,
-                    completed_at, submitted_by, correlation_id, version
+                    completed_at, submitted_by, correlation_id, version,
+                    owner_id, owner_heartbeat_at
                 ) VALUES (
                     %(job_id)s, %(workflow_id)s, %(status)s, %(input_params)s,
                     %(result_data)s, %(error_message)s,
                     %(created_at)s, %(started_at)s, %(completed_at)s,
-                    %(submitted_by)s, %(correlation_id)s, %(version)s
+                    %(submitted_by)s, %(correlation_id)s, %(version)s,
+                    %(owner_id)s, %(owner_heartbeat_at)s
                 )
                 """,
                 {
@@ -71,6 +73,8 @@ class JobRepository:
                     "submitted_by": job.submitted_by,
                     "correlation_id": job.correlation_id,
                     "version": job.version,
+                    "owner_id": job.owner_id,
+                    "owner_heartbeat_at": job.owner_heartbeat_at,
                 },
             )
             logger.info(f"Created job {job.job_id} for workflow {job.workflow_id}")
@@ -126,6 +130,8 @@ class JobRepository:
                     started_at = %(started_at)s,
                     completed_at = %(completed_at)s,
                     updated_at = %(updated_at)s,
+                    owner_id = %(owner_id)s,
+                    owner_heartbeat_at = %(owner_heartbeat_at)s,
                     version = version + 1
                 WHERE job_id = %(job_id)s
                   AND version = %(version)s
@@ -135,10 +141,12 @@ class JobRepository:
                     "status": job.status.value,
                     "result_data": Json(job.result_data) if job.result_data else None,
                     "error_message": job.error_message,
-                    "metadata": Json(job.metadata) if job.metadata else None,
+                    "metadata": Json(job.metadata) if job.metadata else Json({}),
                     "started_at": job.started_at,
                     "completed_at": job.completed_at,
                     "updated_at": job.updated_at,
+                    "owner_id": job.owner_id,
+                    "owner_heartbeat_at": job.owner_heartbeat_at,
                     "version": job.version,
                 },
             )
@@ -349,4 +357,277 @@ class JobRepository:
             submitted_by=row.get("submitted_by"),
             correlation_id=row.get("correlation_id"),
             version=row.get("version", 1),
+            # Multi-orchestrator ownership
+            owner_id=row.get("owner_id"),
+            owner_heartbeat_at=row.get("owner_heartbeat_at"),
         )
+
+    # =========================================================================
+    # MULTI-ORCHESTRATOR OWNERSHIP METHODS
+    # =========================================================================
+
+    async def create_with_owner(self, job: Job, owner_id: str) -> Job:
+        """
+        Create a new job with ownership claim.
+
+        Used when orchestrator claims a job from the Service Bus queue.
+        Sets owner_id and owner_heartbeat_at atomically on creation.
+
+        Args:
+            job: Job instance to persist
+            owner_id: Orchestrator instance ID claiming ownership
+
+        Returns:
+            Created job with ownership fields set
+        """
+        # Set ownership fields
+        job.owner_id = owner_id
+        job.owner_heartbeat_at = datetime.utcnow()
+
+        async with self.pool.connection() as conn:
+            await conn.execute(
+                f"""
+                INSERT INTO {TABLE_JOBS} (
+                    job_id, workflow_id, status, input_params, result_data,
+                    error_message, created_at, started_at,
+                    completed_at, submitted_by, correlation_id, version,
+                    owner_id, owner_heartbeat_at
+                ) VALUES (
+                    %(job_id)s, %(workflow_id)s, %(status)s, %(input_params)s,
+                    %(result_data)s, %(error_message)s,
+                    %(created_at)s, %(started_at)s, %(completed_at)s,
+                    %(submitted_by)s, %(correlation_id)s, %(version)s,
+                    %(owner_id)s, %(owner_heartbeat_at)s
+                )
+                """,
+                {
+                    "job_id": job.job_id,
+                    "workflow_id": job.workflow_id,
+                    "status": job.status.value,
+                    "input_params": Json(job.input_params),
+                    "result_data": Json(job.result_data) if job.result_data else None,
+                    "error_message": job.error_message,
+                    "created_at": job.created_at,
+                    "started_at": job.started_at,
+                    "completed_at": job.completed_at,
+                    "submitted_by": job.submitted_by,
+                    "correlation_id": job.correlation_id,
+                    "version": job.version,
+                    "owner_id": job.owner_id,
+                    "owner_heartbeat_at": job.owner_heartbeat_at,
+                },
+            )
+            logger.info(
+                f"Created job {job.job_id} with owner {owner_id[:8]}... "
+                f"(workflow={job.workflow_id})"
+            )
+            return job
+
+    async def list_active_for_owner(
+        self,
+        owner_id: str,
+        limit: int = 100,
+    ) -> List[Job]:
+        """
+        List active jobs owned by a specific orchestrator.
+
+        This is the KEY query for multi-orchestrator: each orchestrator
+        only processes jobs where owner_id matches its own ID.
+
+        Args:
+            owner_id: Orchestrator instance ID
+            limit: Maximum results
+
+        Returns:
+            List of active jobs owned by this orchestrator
+        """
+        async with self.pool.connection() as conn:
+            conn.row_factory = dict_row
+            result = await conn.execute(
+                f"""
+                SELECT * FROM {TABLE_JOBS}
+                WHERE owner_id = %s
+                  AND status IN ('pending', 'running')
+                ORDER BY created_at ASC
+                LIMIT %s
+                """,
+                (owner_id, limit),
+            )
+            rows = await result.fetchall()
+            return [self._row_to_job(row) for row in rows]
+
+    async def update_heartbeat(self, owner_id: str) -> int:
+        """
+        Update heartbeat for all jobs owned by this orchestrator.
+
+        Called periodically (every 30s) to keep ownership alive.
+        If heartbeat stops, jobs become eligible for orphan reclaim.
+
+        Args:
+            owner_id: Orchestrator instance ID
+
+        Returns:
+            Number of jobs updated
+        """
+        async with self.pool.connection() as conn:
+            result = await conn.execute(
+                f"""
+                UPDATE {TABLE_JOBS}
+                SET owner_heartbeat_at = NOW()
+                WHERE owner_id = %s
+                  AND status IN ('pending', 'running')
+                """,
+                (owner_id,),
+            )
+            count = result.rowcount
+            if count > 0:
+                logger.debug(
+                    f"Updated heartbeat for {count} jobs (owner={owner_id[:8]}...)"
+                )
+            return count
+
+    async def reclaim_orphaned_jobs(
+        self,
+        new_owner_id: str,
+        orphan_threshold_seconds: int = 120,
+        limit: int = 10,
+    ) -> List[str]:
+        """
+        Reclaim jobs with stale heartbeats (orphaned by crashed orchestrators).
+
+        Uses atomic UPDATE with RETURNING to prevent race conditions.
+        Only one orchestrator can win the reclaim for each job.
+        Uses FOR UPDATE SKIP LOCKED to avoid contention.
+
+        Args:
+            new_owner_id: This orchestrator's ID (becomes new owner)
+            orphan_threshold_seconds: How long since heartbeat before orphaned (default 120s)
+            limit: Max jobs to reclaim per call (default 10)
+
+        Returns:
+            List of reclaimed job_ids
+        """
+        async with self.pool.connection() as conn:
+            conn.row_factory = dict_row
+            # Use CTE with FOR UPDATE SKIP LOCKED for safe concurrent reclaim
+            result = await conn.execute(
+                f"""
+                WITH orphans AS (
+                    SELECT job_id FROM {TABLE_JOBS}
+                    WHERE status IN ('pending', 'running')
+                      AND owner_heartbeat_at < NOW() - INTERVAL '%s seconds'
+                    LIMIT %s
+                    FOR UPDATE SKIP LOCKED
+                )
+                UPDATE {TABLE_JOBS}
+                SET owner_id = %s,
+                    owner_heartbeat_at = NOW()
+                WHERE job_id IN (SELECT job_id FROM orphans)
+                RETURNING job_id
+                """,
+                (orphan_threshold_seconds, limit, new_owner_id),
+            )
+            rows = await result.fetchall()
+            job_ids = [row["job_id"] for row in rows]
+
+            if job_ids:
+                logger.info(
+                    f"Reclaimed {len(job_ids)} orphaned jobs: "
+                    f"{[jid[:8] + '...' for jid in job_ids]} "
+                    f"(new_owner={new_owner_id[:8]}...)"
+                )
+
+            return job_ids
+
+    async def get_by_idempotency_key(
+        self,
+        idempotency_key: str,
+    ) -> Optional[Job]:
+        """
+        Get a job by its idempotency key.
+
+        Used to prevent duplicate job creation when the same submission
+        is received multiple times (e.g., Service Bus redelivery).
+
+        Note: Requires idempotency_key to be stored in job metadata
+        or as a dedicated column. Currently checks metadata.
+
+        Args:
+            idempotency_key: The idempotency key from the submission
+
+        Returns:
+            Existing Job with this idempotency key, or None
+        """
+        async with self.pool.connection() as conn:
+            conn.row_factory = dict_row
+            # Check metadata->idempotency_key
+            result = await conn.execute(
+                f"""
+                SELECT * FROM {TABLE_JOBS}
+                WHERE metadata->>'idempotency_key' = %s
+                LIMIT 1
+                """,
+                (idempotency_key,),
+            )
+            row = await result.fetchone()
+
+            if row is None:
+                return None
+
+            return self._row_to_job(row)
+
+    async def release_ownership(self, job_id: str, owner_id: str) -> bool:
+        """
+        Release ownership of a job (on graceful shutdown or job completion).
+
+        Only releases if the job is still owned by the specified owner_id.
+        This prevents accidentally releasing a job that was reclaimed.
+
+        Args:
+            job_id: Job to release
+            owner_id: Current owner (must match for release to succeed)
+
+        Returns:
+            True if ownership was released, False if job not owned by owner_id
+        """
+        async with self.pool.connection() as conn:
+            result = await conn.execute(
+                f"""
+                UPDATE {TABLE_JOBS}
+                SET owner_id = NULL,
+                    owner_heartbeat_at = NULL
+                WHERE job_id = %s
+                  AND owner_id = %s
+                """,
+                (job_id, owner_id),
+            )
+            released = result.rowcount > 0
+            if released:
+                logger.debug(
+                    f"Released ownership of job {job_id[:8]}... "
+                    f"(owner={owner_id[:8]}...)"
+                )
+            return released
+
+    async def count_active_by_owner(self) -> Dict[str, int]:
+        """
+        Count active jobs grouped by owner_id.
+
+        Useful for monitoring job distribution across orchestrator instances.
+
+        Returns:
+            Dict mapping owner_id -> count of active jobs
+        """
+        async with self.pool.connection() as conn:
+            conn.row_factory = dict_row
+            result = await conn.execute(
+                f"""
+                SELECT owner_id, COUNT(*) as count
+                FROM {TABLE_JOBS}
+                WHERE status IN ('pending', 'running')
+                  AND owner_id IS NOT NULL
+                GROUP BY owner_id
+                """,
+            )
+            rows = await result.fetchall()
+            return {row["owner_id"]: row["count"] for row in rows}

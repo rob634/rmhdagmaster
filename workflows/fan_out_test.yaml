@@ -1,0 +1,66 @@
+# ============================================================================
+# FAN-OUT / FAN-IN TEST WORKFLOW
+# ============================================================================
+# Tests the full fan-out/fan-in pipeline:
+# START -> prepare -> split (fan_out) -> [N children] -> aggregate (fan_in) -> END
+#
+# Submit with: {"items": ["alpha", "bravo", "charlie"]}
+#
+# Flow:
+# 1. START auto-completes
+# 2. prepare (echo handler) echoes items through
+# 3. split (fan_out) reads items from prepare's output, spawns N children
+# 4. Each child runs the echo handler with its individual item
+# 5. aggregate (fan_in) collects all child results
+# 6. END auto-completes
+# ============================================================================
+
+workflow_id: fan_out_test
+name: Fan-Out Test Workflow
+version: 1
+description: Tests fan-out/fan-in with echo handler
+
+inputs:
+  item_list:
+    type: array
+    required: true
+    description: List of items to fan out over
+
+nodes:
+  start:
+    type: start
+    description: Workflow entry point
+    next: prepare
+
+  prepare:
+    type: task
+    handler: echo
+    queue: dag-worker-tasks
+    description: Pass items through so fan-out can reference output
+    params:
+      item_list: "{{ inputs.item_list }}"
+    timeout_seconds: 60
+    next: split
+
+  split:
+    type: fan_out
+    description: Fan out over each item from prepare
+    source: "{{ nodes.prepare.output.echoed_params.item_list }}"
+    task:
+      handler: echo
+      queue: dag-worker-tasks
+      params:
+        item_value: "{{ item }}"
+        item_index: "{{ index }}"
+      timeout_seconds: 60
+    next: aggregate
+
+  aggregate:
+    type: fan_in
+    description: Collect all fan-out results
+    aggregation: collect
+    next: end
+
+  end:
+    type: end
+    description: Workflow exit point

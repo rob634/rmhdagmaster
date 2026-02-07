@@ -57,6 +57,7 @@ class NodeState(NodeData):
         ("idx_dag_node_status", ["status"]),
         ("idx_dag_node_job", ["job_id"]),
         ("idx_dag_node_task", ["task_id"], "task_id IS NOT NULL"),
+        ("idx_dag_node_parent", ["parent_node_id"], "parent_node_id IS NOT NULL"),
     ]
 
     # Status
@@ -107,6 +108,10 @@ class NodeState(NodeData):
     fan_out_index: Optional[int] = Field(
         default=None,
         description="Index within fan-out (0, 1, 2, ...)"
+    )
+    input_params: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Resolved params stored at creation time (for dynamic node retries)"
     )
 
     # Checkpoint support (for resumable long-running tasks)

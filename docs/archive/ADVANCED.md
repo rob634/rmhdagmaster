@@ -3026,6 +3026,8 @@ class TaskExecutor:
 ## 12. Concurrency Control & Locking Implementation
 
 **Added**: 02 FEB 2026
+**Updated**: 03 FEB 2026 - Replaced Layer 1 advisory lock with lease-based approach
+
 **Priority**: P1.5 (Foundation - recommended before advanced features)
 
 ### 12.1 Problem Statement
@@ -3034,21 +3036,36 @@ Even with a single orchestrator, race conditions can occur:
 
 1. **Accidental multi-instance**: Developer runs orchestrator locally while Azure instance runs
 2. **Container restart overlap**: Brief window where old and new container both run
-3. **Future scaling**: Horizontal scaling requires proper locking from the start
-4. **Read-modify-write**: `check_and_ready_nodes()` has a read-modify-write pattern
+3. **ASE multiple instances**: Azure App Service Environment may spin up duplicate containers
+4. **Future scaling**: Horizontal scaling requires proper locking from the start
+5. **Read-modify-write**: `check_and_ready_nodes()` has a read-modify-write pattern
+
+**Critical Issue with Advisory Locks (Layer 1)**:
+
+When a container crashes in ASE, PostgreSQL advisory locks don't release immediately:
+
+```
+Container crashes → Python dies → TCP connection becomes "half-open"
+                                → PostgreSQL thinks session is alive
+                                → Advisory lock remains held
+                                → New orchestrator BLOCKED for minutes
+```
+
+TCP keepalive timeout can be 60+ seconds (or longer), during which no new orchestrator can start.
 
 ### 12.2 Locking Strategy
 
-Four layers of defense, using PostgreSQL advisory locks:
+Four layers of defense:
 
 ```
-Layer 1: ORCHESTRATOR LOCK (Session-level)
+Layer 1: ORCHESTRATOR LEASE (Table-based with TTL) ← UPDATED
 ├── Only one orchestrator process runs at a time
-├── Acquired at startup, held for process lifetime
-├── Auto-releases on crash/disconnect
-└── Implementation: pg_try_advisory_lock(hash)
+├── Lease expires automatically after TTL (30 seconds)
+├── Background pulse task renews lease every 10 seconds
+├── Crash recovery: new orchestrator takes over in ≤30 seconds
+└── Implementation: dag_orchestrator_lease table
 
-Layer 2: JOB LOCK (Transaction-level)
+Layer 2: JOB LOCK (Transaction-level advisory)
 ├── One process handles a job at a time
 ├── Non-blocking: skip job if locked
 ├── Enables future horizontal scaling
@@ -3067,15 +3084,84 @@ Layer 4: IDEMPOTENT TRANSITIONS (Already have)
 └── Implementation: Already exists
 ```
 
-### 12.3 PostgreSQL Advisory Locks
+### 12.3 Lease-Based Orchestrator Lock (Layer 1)
 
-Advisory locks are application-level locks in PostgreSQL:
+**Why not advisory locks for the orchestrator?**
+
+| Scenario | Advisory Lock | Lease-Based |
+|----------|---------------|-------------|
+| Normal shutdown | ✅ Released | ✅ Released |
+| Container crash (SIGKILL) | ❌ Stuck for minutes | ✅ Expires in 30s |
+| Network partition | ❌ Lock held indefinitely | ✅ Expires in 30s |
+| ASE scales out | ✅ New instance blocked | ✅ New instance blocked |
+
+**Lease Table Schema**:
 
 ```sql
--- Session-level (held until released or disconnect)
-SELECT pg_try_advisory_lock(12345);      -- Returns true if acquired
-SELECT pg_advisory_unlock(12345);         -- Release
+CREATE TABLE dagapp.dag_orchestrator_lease (
+    lock_name       VARCHAR(64) PRIMARY KEY,
+    holder_id       VARCHAR(64) NOT NULL,
+    acquired_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    pulse_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    lease_ttl_sec   INTEGER NOT NULL DEFAULT 30
+);
 
+-- Single row for orchestrator lock
+-- lock_name = 'orchestrator'
+```
+
+**Acquisition Logic** (atomic INSERT ON CONFLICT):
+
+```sql
+INSERT INTO dagapp.dag_orchestrator_lease (lock_name, holder_id, acquired_at, pulse_at)
+VALUES ('orchestrator', $1, NOW(), NOW())
+ON CONFLICT (lock_name) DO UPDATE
+SET
+    holder_id = EXCLUDED.holder_id,
+    acquired_at = NOW(),
+    pulse_at = NOW()
+WHERE
+    -- Same holder reconnecting
+    dag_orchestrator_lease.holder_id = EXCLUDED.holder_id
+    -- OR lease has expired
+    OR dag_orchestrator_lease.pulse_at < NOW() - INTERVAL '1 second' * dag_orchestrator_lease.lease_ttl_sec
+RETURNING holder_id = $1 AS acquired;
+```
+
+**Pulse Logic** (called every 10 seconds):
+
+```sql
+UPDATE dagapp.dag_orchestrator_lease
+SET pulse_at = NOW()
+WHERE lock_name = 'orchestrator' AND holder_id = $1
+RETURNING true AS pulsed;
+```
+
+**Release Logic** (graceful shutdown):
+
+```sql
+DELETE FROM dagapp.dag_orchestrator_lease
+WHERE lock_name = 'orchestrator' AND holder_id = $1;
+```
+
+**Configuration Parameters**:
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `LEASE_TTL_SEC` | 30 | Lease expires after this many seconds without pulse |
+| `PULSE_INTERVAL_SEC` | 10 | How often to renew the lease (TTL/3) |
+| `LEASE_ACQUIRE_RETRIES` | 3 | Retry count on transient failures |
+| `LEASE_ACQUIRE_DELAY_SEC` | 5 | Delay between acquisition retries |
+
+### 12.4 Job Locks (Layer 2 - Advisory Locks)
+
+Advisory locks are still appropriate for job-level locking because:
+- Short-lived (transaction scope)
+- Auto-release at transaction end
+- Fast (in-memory)
+- Job locks don't need to survive container restarts
+
+```sql
 -- Transaction-level (auto-release at commit/rollback)
 SELECT pg_try_advisory_xact_lock(12345);  -- Returns true if acquired
 -- No unlock needed - releases at transaction end
@@ -3083,11 +3169,11 @@ SELECT pg_try_advisory_xact_lock(12345);  -- Returns true if acquired
 
 **Key properties**:
 - Fast (in-memory, no disk I/O)
-- Auto-release on disconnect (crash-safe)
+- Auto-release on transaction end
 - Supports non-blocking try_lock
 - 64-bit key space
 
-### 12.4 Implementation: LockService
+### 12.5 Implementation: LockService
 
 **File**: `infrastructure/locking.py`
 
@@ -3095,15 +3181,21 @@ SELECT pg_try_advisory_xact_lock(12345);  -- Returns true if acquired
 """
 Distributed Locking Service
 
-Uses PostgreSQL advisory locks for coordination.
+Uses:
+- Table-based lease with pulse for orchestrator lock (crash-safe)
+- PostgreSQL advisory locks for job-level coordination (fast)
+
 Zero external dependencies - just Postgres.
 """
 
+import asyncio
 import hashlib
 import logging
+import uuid
 from contextlib import asynccontextmanager
 from typing import Optional
 
+from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
 logger = logging.getLogger(__name__)
@@ -3112,12 +3204,17 @@ logger = logging.getLogger(__name__)
 class LockService:
     """PostgreSQL-based distributed locking."""
 
-    ORCHESTRATOR_LOCK = "rmhdag:orchestrator"
     JOB_LOCK_PREFIX = "rmhdag:job:"
+
+    # Lease configuration
+    LEASE_TTL_SEC = 30          # Lease expires after 30 seconds
+    PULSE_INTERVAL_SEC = 10     # Renew lease every 10 seconds
 
     def __init__(self, pool: AsyncConnectionPool):
         self.pool = pool
-        self._orchestrator_conn = None
+        self._holder_id = str(uuid.uuid4())  # Unique ID for this instance
+        self._has_lease = False
+        self._pulse_task: Optional[asyncio.Task] = None
 
     @staticmethod
     def _hash_to_lock_id(key: str) -> int:
@@ -3126,66 +3223,148 @@ class LockService:
         return int.from_bytes(h, byteorder='big', signed=True)
 
     # ═══════════════════════════════════════════════════════════════
-    # LAYER 1: ORCHESTRATOR LOCK
+    # LAYER 1: ORCHESTRATOR LEASE (Table-based with TTL)
     # ═══════════════════════════════════════════════════════════════
 
-    async def try_acquire_orchestrator_lock(self) -> bool:
+    async def try_acquire_orchestrator_lease(self) -> bool:
         """
-        Try to acquire the global orchestrator lock.
+        Try to acquire the orchestrator lease.
 
-        Only one orchestrator should run at a time. This lock is held
-        for the lifetime of the orchestrator process via a dedicated connection.
+        Succeeds if:
+        - No lease exists (first orchestrator)
+        - Existing lease has expired (previous holder crashed)
+        - We already hold the lease (reconnecting)
 
         Returns:
-            True if lock acquired, False if another orchestrator holds it
+            True if lease acquired, False if another orchestrator holds active lease
         """
-        lock_id = self._hash_to_lock_id(self.ORCHESTRATOR_LOCK)
-
-        # Get a dedicated connection to hold the session-level lock
-        self._orchestrator_conn = await self.pool.getconn()
-
-        try:
-            result = await self._orchestrator_conn.execute(
-                "SELECT pg_try_advisory_lock(%s) as acquired",
-                (lock_id,),
+        async with self.pool.connection() as conn:
+            conn.row_factory = dict_row
+            result = await conn.execute(
+                """
+                INSERT INTO dagapp.dag_orchestrator_lease
+                    (lock_name, holder_id, acquired_at, pulse_at, lease_ttl_sec)
+                VALUES
+                    ('orchestrator', %(holder_id)s, NOW(), NOW(), %(ttl)s)
+                ON CONFLICT (lock_name) DO UPDATE
+                SET
+                    holder_id = EXCLUDED.holder_id,
+                    acquired_at = NOW(),
+                    pulse_at = NOW()
+                WHERE
+                    -- Same holder reconnecting
+                    dag_orchestrator_lease.holder_id = EXCLUDED.holder_id
+                    -- OR lease has expired (pulse_at + ttl < now)
+                    OR dag_orchestrator_lease.pulse_at <
+                       NOW() - INTERVAL '1 second' * dag_orchestrator_lease.lease_ttl_sec
+                RETURNING holder_id = %(holder_id)s AS acquired
+                """,
+                {"holder_id": self._holder_id, "ttl": self.LEASE_TTL_SEC},
             )
             row = await result.fetchone()
-            acquired = row[0] if row else False
 
-            if acquired:
-                logger.info("Acquired orchestrator lock")
+            if row and row["acquired"]:
+                self._has_lease = True
+                logger.info(
+                    f"Acquired orchestrator lease (holder_id={self._holder_id[:8]}..., "
+                    f"ttl={self.LEASE_TTL_SEC}s)"
+                )
+                return True
             else:
                 logger.warning(
-                    "Failed to acquire orchestrator lock - another instance running?"
+                    "Failed to acquire orchestrator lease - another instance holds it"
                 )
-                await self.pool.putconn(self._orchestrator_conn)
-                self._orchestrator_conn = None
+                return False
 
-            return acquired
+    async def pulse_lease(self) -> bool:
+        """
+        Renew the orchestrator lease.
 
-        except Exception as e:
-            logger.error(f"Error acquiring orchestrator lock: {e}")
-            if self._orchestrator_conn:
-                await self.pool.putconn(self._orchestrator_conn)
-                self._orchestrator_conn = None
-            return False
+        Called periodically (every PULSE_INTERVAL_SEC) to keep the lease alive.
 
-    async def release_orchestrator_lock(self) -> None:
-        """Release the orchestrator lock."""
-        if self._orchestrator_conn:
-            lock_id = self._hash_to_lock_id(self.ORCHESTRATOR_LOCK)
+        Returns:
+            True if pulse succeeded, False if we lost the lease
+        """
+        async with self.pool.connection() as conn:
+            conn.row_factory = dict_row
+            result = await conn.execute(
+                """
+                UPDATE dagapp.dag_orchestrator_lease
+                SET pulse_at = NOW()
+                WHERE lock_name = 'orchestrator' AND holder_id = %(holder_id)s
+                RETURNING true AS pulsed
+                """,
+                {"holder_id": self._holder_id},
+            )
+            row = await result.fetchone()
+
+            if row and row["pulsed"]:
+                logger.debug("Lease pulse sent")
+                return True
+            else:
+                logger.error("Lease pulse failed - lost the lease!")
+                self._has_lease = False
+                return False
+
+    async def release_orchestrator_lease(self) -> None:
+        """Release the orchestrator lease (graceful shutdown)."""
+        if self._has_lease:
             try:
-                await self._orchestrator_conn.execute(
-                    "SELECT pg_advisory_unlock(%s)",
-                    (lock_id,),
-                )
-                logger.info("Released orchestrator lock")
+                async with self.pool.connection() as conn:
+                    await conn.execute(
+                        """
+                        DELETE FROM dagapp.dag_orchestrator_lease
+                        WHERE lock_name = 'orchestrator' AND holder_id = %(holder_id)s
+                        """,
+                        {"holder_id": self._holder_id},
+                    )
+                logger.info("Released orchestrator lease")
+            except Exception as e:
+                logger.warning(f"Error releasing lease: {e}")
             finally:
-                await self.pool.putconn(self._orchestrator_conn)
-                self._orchestrator_conn = None
+                self._has_lease = False
+
+    async def start_pulse_task(self) -> None:
+        """Start the background pulse task."""
+        if self._pulse_task is None:
+            self._pulse_task = asyncio.create_task(self._pulse_loop())
+            logger.info(f"Started lease pulse task (interval={self.PULSE_INTERVAL_SEC}s)")
+
+    async def stop_pulse_task(self) -> None:
+        """Stop the background pulse task."""
+        if self._pulse_task:
+            self._pulse_task.cancel()
+            try:
+                await self._pulse_task
+            except asyncio.CancelledError:
+                pass
+            self._pulse_task = None
+            logger.info("Stopped lease pulse task")
+
+    async def _pulse_loop(self) -> None:
+        """Background loop that sends pulse every PULSE_INTERVAL_SEC."""
+        while True:
+            try:
+                await asyncio.sleep(self.PULSE_INTERVAL_SEC)
+                if self._has_lease:
+                    await self.pulse_lease()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Error in pulse loop: {e}")
+
+    @property
+    def has_orchestrator_lease(self) -> bool:
+        """Check if this service holds the orchestrator lease."""
+        return self._has_lease
+
+    @property
+    def holder_id(self) -> str:
+        """Get this instance's holder ID."""
+        return self._holder_id
 
     # ═══════════════════════════════════════════════════════════════
-    # LAYER 2: JOB LOCK
+    # LAYER 2: JOB LOCK (Advisory locks - unchanged)
     # ═══════════════════════════════════════════════════════════════
 
     @asynccontextmanager
@@ -3193,35 +3372,31 @@ class LockService:
         """
         Context manager for job-level locking.
 
+        Uses transaction-level advisory locks (fast, auto-release).
+
         Args:
             job_id: Job to lock
             blocking: If True, wait for lock. If False, skip if unavailable.
 
         Yields:
             True if lock acquired, False otherwise
-
-        Usage:
-            async with lock_service.job_lock(job_id) as acquired:
-                if acquired:
-                    await process_job(job)
         """
         lock_id = self._hash_to_lock_id(f"{self.JOB_LOCK_PREFIX}{job_id}")
 
         async with self.pool.connection() as conn:
+            conn.row_factory = dict_row
             if blocking:
-                # Blocking: wait for lock
                 await conn.execute(
                     "SELECT pg_advisory_xact_lock(%s)", (lock_id,)
                 )
                 acquired = True
             else:
-                # Non-blocking: return immediately
                 result = await conn.execute(
                     "SELECT pg_try_advisory_xact_lock(%s) as acquired",
                     (lock_id,),
                 )
                 row = await result.fetchone()
-                acquired = row[0] if row else False
+                acquired = row["acquired"] if row else False
 
             if acquired:
                 logger.debug(f"Acquired lock for job {job_id}")
@@ -3231,7 +3406,6 @@ class LockService:
             try:
                 yield acquired
             finally:
-                # Transaction-level locks auto-release
                 if acquired:
                     logger.debug(f"Released lock for job {job_id}")
 
@@ -3241,7 +3415,75 @@ class LockNotAcquired(Exception):
     pass
 ```
 
-### 12.5 Implementation: Version Column (Layer 3)
+### 12.6 OrchestratorLease Model
+
+**File**: `core/models/lease.py`
+
+```python
+"""
+Orchestrator Lease Model
+
+Table-based lease with TTL for crash-safe orchestrator coordination.
+"""
+
+from datetime import datetime
+from typing import ClassVar, List, Optional
+
+from pydantic import BaseModel, Field
+
+
+class OrchestratorLease(BaseModel):
+    """
+    Orchestrator lease for leader election.
+
+    Only one orchestrator can hold the lease at a time.
+    Lease expires if not renewed within TTL.
+    """
+
+    # SQL DDL Metadata
+    __sql_table__: ClassVar[str] = "dag_orchestrator_lease"
+    __sql_schema__: ClassVar[str] = "dagapp"
+    __sql_primary_key__: ClassVar[List[str]] = ["lock_name"]
+
+    lock_name: str = Field(
+        max_length=64,
+        description="Lock identifier (always 'orchestrator')"
+    )
+    holder_id: str = Field(
+        max_length=64,
+        description="UUID of the instance holding the lease"
+    )
+    acquired_at: datetime = Field(
+        default_factory=datetime.utcnow,
+        description="When the lease was first acquired"
+    )
+    pulse_at: datetime = Field(
+        default_factory=datetime.utcnow,
+        description="Last pulse timestamp (must be renewed within TTL)"
+    )
+    lease_ttl_sec: int = Field(
+        default=30,
+        ge=10,
+        le=300,
+        description="Lease TTL in seconds (default 30s)"
+    )
+
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "lock_name": "orchestrator",
+                    "holder_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+                    "acquired_at": "2026-02-03T12:00:00Z",
+                    "pulse_at": "2026-02-03T12:05:30Z",
+                    "lease_ttl_sec": 30,
+                }
+            ]
+        }
+    }
+```
+
+### 12.7 Implementation: Version Column (Layer 3)
 
 **Model update** (`core/models/node.py`):
 
@@ -3329,35 +3571,44 @@ async def update(self, node: NodeState) -> bool:
 
 ### 12.6 Implementation: Orchestrator Integration
 
-**Update Orchestrator.start()** (`orchestrator/loop.py`):
+**Orchestrator.start()** (`orchestrator/loop.py`):
 
 ```python
 async def start(self) -> None:
-    """Start the orchestration loop."""
+    """Start the orchestration loop with lease-based locking."""
     if self._running:
         logger.warning("Orchestrator already running")
         return
 
-    # Acquire orchestrator lock first
-    self._has_orchestrator_lock = await self.lock_service.try_acquire_orchestrator_lock()
-    if not self._has_orchestrator_lock:
+    # Acquire orchestrator lease (Layer 1: single orchestrator)
+    lease_acquired = await self.lock_service.try_acquire_orchestrator_lease()
+    if not lease_acquired:
+        lease_info = await self.lock_service.get_lease_info()
+        if lease_info:
+            raise RuntimeError(
+                f"Cannot start orchestrator: lease held by {lease_info['holder_id'][:8]}..., "
+                f"expires at {lease_info['expires_at']}. "
+                "Wait for lease to expire or check for duplicate deployments."
+            )
         raise RuntimeError(
-            "Cannot start: another orchestrator instance is running. "
-            "Check for duplicate deployments."
+            "Cannot start: another orchestrator instance is running."
         )
+
+    # Start pulse task to keep the lease alive
+    await self.lock_service.start_pulse_task()
 
     self._running = True
     self._started_at = datetime.utcnow()
     self._publisher = await get_publisher()
     self._task = asyncio.create_task(self._run_loop())
-    logger.info("Orchestrator started with exclusive lock")
+    logger.info(f"Orchestrator started with lease (holder_id={self.lock_service.holder_id[:8]}...)")
 ```
 
-**Update Orchestrator.stop()** (`orchestrator/loop.py`):
+**Orchestrator.stop()** (`orchestrator/loop.py`):
 
 ```python
 async def stop(self) -> None:
-    """Stop the orchestration loop."""
+    """Stop the orchestration loop and release lease."""
     self._running = False
 
     if self._task:
@@ -3368,15 +3619,30 @@ async def stop(self) -> None:
             pass
         self._task = None
 
-    # Release orchestrator lock
-    if self._has_orchestrator_lock:
-        await self.lock_service.release_orchestrator_lock()
-        self._has_orchestrator_lock = False
+    # Stop pulse task first, then release lease
+    await self.lock_service.stop_pulse_task()
+    await self.lock_service.release_orchestrator_lease()
 
-    logger.info("Orchestrator stopped, lock released")
+    logger.info("Orchestrator stopped, lease released")
 ```
 
-**Update _process_job()** (`orchestrator/loop.py`):
+**Orchestrator._run_loop()** (`orchestrator/loop.py`):
+
+```python
+async def _run_loop(self) -> None:
+    """Main loop with lease loss detection."""
+    while self._running:
+        # Check if we still hold the lease
+        if not self.lock_service.has_orchestrator_lease:
+            logger.error("Lost orchestrator lease - shutting down")
+            self._running = False
+            break
+
+        await self._cycle()
+        await asyncio.sleep(self.poll_interval)
+```
+
+**_process_job()** (`orchestrator/loop.py`):
 
 ```python
 async def _process_job(self, job: Job) -> None:
@@ -3466,20 +3732,45 @@ from infrastructure.locking import LockService
 
 
 @pytest.mark.asyncio
-async def test_orchestrator_lock_exclusive(pool):
-    """Only one orchestrator can acquire the lock."""
+async def test_orchestrator_lease_exclusive(pool):
+    """Only one orchestrator can acquire the lease."""
     lock1 = LockService(pool)
     lock2 = LockService(pool)
 
     # First acquires
-    assert await lock1.try_acquire_orchestrator_lock() is True
+    assert await lock1.try_acquire_orchestrator_lease() is True
+    assert lock1.has_orchestrator_lease is True
 
-    # Second fails
-    assert await lock2.try_acquire_orchestrator_lock() is False
+    # Second fails (active lease exists)
+    assert await lock2.try_acquire_orchestrator_lease() is False
+    assert lock2.has_orchestrator_lease is False
 
-    # First releases, second can now acquire
-    await lock1.release_orchestrator_lock()
-    assert await lock2.try_acquire_orchestrator_lock() is True
+    # First releases, second can now acquire immediately
+    await lock1.release_orchestrator_lease()
+    assert await lock2.try_acquire_orchestrator_lease() is True
+
+
+@pytest.mark.asyncio
+async def test_lease_expiry_allows_takeover(pool):
+    """Expired lease can be taken over by new orchestrator."""
+    lock1 = LockService(pool)
+    lock2 = LockService(pool)
+
+    # Acquire lease
+    assert await lock1.try_acquire_orchestrator_lease() is True
+
+    # Simulate expiry by manually setting pulse_at in the past
+    # (In real code, wait for TTL or use a shorter TTL for testing)
+    async with pool.connection() as conn:
+        await conn.execute("""
+            UPDATE dagapp.dag_orchestrator_lease
+            SET pulse_at = NOW() - INTERVAL '60 seconds'
+            WHERE lock_name = 'orchestrator'
+        """)
+
+    # Now lock2 can take over the expired lease
+    assert await lock2.try_acquire_orchestrator_lease() is True
+    assert lock2.has_orchestrator_lease is True
 
 
 @pytest.mark.asyncio

@@ -187,6 +187,7 @@ class TaskPublisher:
         workflow: WorkflowDefinition,
         job_params: dict,
         checkpoint_data: Optional[Dict[str, Any]] = None,
+        node_outputs: Optional[Dict[str, Dict[str, Any]]] = None,
     ) -> TaskMessage:
         """
         Create a TaskMessage from a node state.
@@ -196,17 +197,29 @@ class TaskPublisher:
             workflow: Workflow definition for handler info
             job_params: Job input parameters
             checkpoint_data: Optional checkpoint data for resumable tasks (on retry)
+            node_outputs: Optional map of node_id -> output dict from completed nodes
 
         Returns:
             TaskMessage ready for dispatch
+
+        Raises:
+            TemplateResolutionError: If template expressions cannot be resolved
         """
         node_def = workflow.get_node(node.node_id)
 
         # Generate task ID
         task_id = f"{node.job_id}_{node.node_id}_{node.retry_count}"
 
-        # Resolve parameters (simple template substitution)
-        params = self._resolve_params(node_def.params, job_params)
+        # Resolve parameters using Jinja2 template engine
+        # Supports: {{ inputs.x }}, {{ nodes.prev.output.y }}, {{ env.VAR }}
+        # Deferred import to avoid circular: messaging -> orchestrator -> messaging
+        from orchestrator.engine.templates import resolve_params
+
+        params = resolve_params(
+            params=node_def.params,
+            job_params=job_params,
+            node_outputs=node_outputs,
+        )
 
         return TaskMessage(
             task_id=task_id,
@@ -218,44 +231,6 @@ class TaskPublisher:
             retry_count=node.retry_count,
             checkpoint_data=checkpoint_data,
         )
-
-    def _resolve_params(
-        self,
-        template_params: dict,
-        job_params: dict,
-    ) -> dict:
-        """
-        Resolve template parameters.
-
-        Replaces {{ input.field }} with actual values from job_params.
-
-        Args:
-            template_params: Parameter dict with templates
-            job_params: Job input parameters
-
-        Returns:
-            Resolved parameters
-        """
-        resolved = {}
-
-        for key, value in template_params.items():
-            if isinstance(value, str) and "{{" in value:
-                # Simple template resolution
-                # TODO: Use proper template engine
-                resolved_value = value
-                for param_key, param_value in job_params.items():
-                    placeholder = "{{ input." + param_key + " }}"
-                    if placeholder in resolved_value:
-                        resolved_value = resolved_value.replace(
-                            placeholder, str(param_value)
-                        )
-                resolved[key] = resolved_value
-            elif isinstance(value, dict):
-                resolved[key] = self._resolve_params(value, job_params)
-            else:
-                resolved[key] = value
-
-        return resolved
 
     async def __aenter__(self) -> "TaskPublisher":
         await self.connect()

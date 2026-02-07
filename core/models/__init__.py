@@ -18,20 +18,24 @@ Single Source of Truth Pattern:
     - PostgreSQL schema generated from models
 """
 
-from core.models.workflow import WorkflowDefinition, NodeDefinition, NodeType
+from core.models.workflow import WorkflowDefinition, NodeDefinition, NodeType, FanOutTaskDef
 from core.models.job import Job
+from core.models.job_queue_message import JobQueueMessage
 from core.models.node import NodeState
 from core.models.task import TaskMessage, TaskResult
 from core.models.events import JobEvent, EventType, EventStatus
 from core.models.checkpoint import Checkpoint
+from core.models.lease import OrchestratorLease
 
 __all__ = [
     # Workflow
     "WorkflowDefinition",
     "NodeDefinition",
     "NodeType",
+    "FanOutTaskDef",
     # Job
     "Job",
+    "JobQueueMessage",
     # Node
     "NodeState",
     # Task
@@ -43,4 +47,6 @@ __all__ = [
     "JobEvent",
     "EventType",
     "EventStatus",
+    # Lease
+    "OrchestratorLease",
 ]

@@ -423,7 +423,7 @@ END$$
         Returns:
             List of sql.Composed statements ready for execution
         """
-        from core.models import Job, NodeState, JobEvent, Checkpoint
+        from core.models import Job, NodeState, JobEvent, Checkpoint, OrchestratorLease
         from core.models.task import TaskResult
         from core.contracts import JobStatus, NodeStatus, TaskStatus
 
@@ -455,6 +455,7 @@ END$$
         statements.append(self.generate_table(TaskResult))
         statements.append(self.generate_table(JobEvent))
         statements.append(self.generate_table(Checkpoint))
+        statements.append(self.generate_table(OrchestratorLease))
 
         # Generate indexes
         statements.extend(self.generate_indexes(Job))
@@ -462,6 +463,7 @@ END$$
         statements.extend(self.generate_indexes(TaskResult))
         statements.extend(self.generate_indexes(JobEvent))
         statements.extend(self.generate_indexes(Checkpoint))
+        # OrchestratorLease has no custom indexes (just PK)
 
         # Generate updated_at triggers
         statements.append(TriggerBuilder.updated_at_function(self.schema_name))

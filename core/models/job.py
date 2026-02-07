@@ -53,6 +53,9 @@ class Job(JobData):
         ("idx_dag_jobs_status", ["status"]),
         ("idx_dag_jobs_workflow", ["workflow_id"]),
         ("idx_dag_jobs_created", ["created_at"]),
+        # Multi-orchestrator indexes
+        ("idx_dag_jobs_owner", ["owner_id"]),
+        ("idx_dag_jobs_heartbeat", ["owner_heartbeat_at"]),
     ]
 
     # Status
@@ -110,6 +113,17 @@ class Job(JobData):
         default=None,
         max_length=64,
         description="External correlation ID for tracing"
+    )
+
+    # Multi-orchestrator ownership
+    owner_id: Optional[str] = Field(
+        default=None,
+        max_length=64,
+        description="Orchestrator instance ID that owns this job"
+    )
+    owner_heartbeat_at: Optional[datetime] = Field(
+        default=None,
+        description="Last heartbeat from owning orchestrator"
     )
 
     @computed_field

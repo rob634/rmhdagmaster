@@ -41,7 +41,7 @@ nodes:
     handler: raster_validate
     description: Validate raster file format and metadata
     params:
-      source_path: "{{ input.source_path }}"
+      source_path: "{{ inputs.source_path }}"
     timeout_seconds: 300
     retry:
       max_attempts: 2
@@ -56,7 +56,7 @@ nodes:
     description: Convert raster to COG format
     queue: docker-worker-tasks
     params:
-      source_path: "{{ input.source_path }}"
+      source_path: "{{ inputs.source_path }}"
     timeout_seconds: 3600
     retry:
       max_attempts: 3
@@ -71,7 +71,7 @@ nodes:
     handler: blob_upload
     description: Upload COG to destination blob storage
     params:
-      collection_id: "{{ input.collection_id }}"
+      collection_id: "{{ inputs.collection_id }}"
     timeout_seconds: 600
     retry:
       max_attempts: 3
@@ -85,8 +85,8 @@ nodes:
     handler: stac_publish
     description: Create STAC item and publish to catalog
     params:
-      collection_id: "{{ input.collection_id }}"
-      asset_id: "{{ input.asset_id }}"
+      collection_id: "{{ inputs.collection_id }}"
+      asset_id: "{{ inputs.asset_id }}"
     timeout_seconds: 300
     retry:
       max_attempts: 3

@@ -22,6 +22,7 @@ Usage:
 
 from .database import get_pool, DatabasePool
 from .job_repo import JobRepository
+from .job_queue_repo import JobQueueRepository, create_job_queue_repository
 from .node_repo import NodeRepository
 from .task_repo import TaskResultRepository
 from .event_repo import EventRepository
@@ -31,6 +32,8 @@ __all__ = [
     "get_pool",
     "DatabasePool",
     "JobRepository",
+    "JobQueueRepository",
+    "create_job_queue_repository",
     "NodeRepository",
     "TaskResultRepository",
     "EventRepository",

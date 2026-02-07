@@ -1,0 +1,22 @@
+{
+  "IsEncrypted": false,
+  "Values": {
+    "FUNCTIONS_WORKER_RUNTIME": "python",
+    "AzureWebJobsStorage": "UseDevelopmentStorage=true",
+
+    "SERVICE_BUS_NAMESPACE": "your-namespace.servicebus.windows.net",
+    "JOB_QUEUE_NAME": "dag-jobs",
+
+    "POSTGIS_HOST": "your-postgres-server.postgres.database.azure.com",
+    "POSTGIS_PORT": "5432",
+    "POSTGIS_DATABASE": "dagmaster",
+    "POSTGIS_USER": "your-username",
+    "POSTGIS_PASSWORD": "your-password",
+
+    "ORCHESTRATOR_URL": "https://your-orchestrator.azurewebsites.net",
+    "WORKER_URL": "https://your-worker.azurewebsites.net"
+  },
+  "Host": {
+    "CORS": "*"
+  }
+}

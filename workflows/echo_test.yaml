@@ -38,8 +38,8 @@ nodes:
     queue: dag-worker-tasks
     description: Echo the input parameters back
     params:
-      message: "{{ input.message }}"
-      count: "{{ input.count }}"
+      message: "{{ inputs.message }}"
+      count: "{{ inputs.count }}"
     timeout_seconds: 60
     retry:
       max_attempts: 3

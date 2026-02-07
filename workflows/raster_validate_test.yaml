@@ -42,9 +42,9 @@ nodes:
     description: Validate raster file and extract metadata
     queue: container-tasks
     params:
-      blob_path: "{{ input.blob_path }}"
-      input_crs: "{{ input.input_crs }}"
-      raster_type: "{{ input.raster_type }}"
+      blob_path: "{{ inputs.blob_path }}"
+      input_crs: "{{ inputs.input_crs }}"
+      raster_type: "{{ inputs.raster_type }}"
     timeout_seconds: 300
     retry:
       max_attempts: 2

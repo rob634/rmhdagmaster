@@ -73,6 +73,14 @@ class DependsOn(BaseModel):
         return v
 
 
+class FanOutTaskDef(BaseModel):
+    """Task template for each item in a fan-out expansion."""
+    handler: str = Field(..., max_length=64, description="Handler to execute for each item")
+    queue: str = Field(default="dag-worker-tasks", description="Service Bus queue")
+    params: Dict[str, Any] = Field(default_factory=dict, description="Params with {{ item }}/{{ index }} placeholders")
+    timeout_seconds: int = Field(default=3600, ge=1, le=86400)
+
+
 class NodeDefinition(BaseModel):
     """
     Definition of a single node in a workflow.
@@ -121,9 +129,16 @@ class NodeDefinition(BaseModel):
         default=None,
         description="Template expression returning array to fan out over"
     )
-    task: Optional[Dict[str, Any]] = Field(
+    task: Optional["FanOutTaskDef"] = Field(
         default=None,
         description="Task definition for each fan-out item"
+    )
+
+    # For FAN_IN nodes
+    aggregation: Optional[str] = Field(
+        default=None,
+        pattern="^(collect|concat|sum|first|last)$",
+        description="Aggregation mode for FAN_IN nodes"
     )
 
     # Documentation
@@ -224,6 +239,14 @@ class WorkflowDefinition(BaseModel):
                     errors.append(f"CONDITIONAL node '{node_id}' must have branches")
                 elif not any(b.default for b in node.branches):
                     errors.append(f"CONDITIONAL node '{node_id}' should have a default branch")
+
+        # FAN_OUT nodes must have source and task
+        for node_id, node in self.nodes.items():
+            if node.type == NodeType.FAN_OUT:
+                if not node.source:
+                    errors.append(f"FAN_OUT node '{node_id}' must have a 'source' field")
+                if not node.task:
+                    errors.append(f"FAN_OUT node '{node_id}' must have a 'task' field")
 
         return errors
 

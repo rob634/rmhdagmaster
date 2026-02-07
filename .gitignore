@@ -44,11 +44,13 @@ htmlcov/
 # Logs
 *.log
 logs/
+tmp_logs/
 
 # Local configuration (may contain secrets)
 .env.local
 *.local.yaml
 config.local.py
+local.settings.json
 
 # OS
 .DS_Store

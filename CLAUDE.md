@@ -1,6 +1,6 @@
 # CLAUDE.md - rmhdagmaster Project Constitution
 
-**Last Updated**: 02 FEB 2026
+**Last Updated**: 06 FEB 2026
 
 ---
 
@@ -10,9 +10,15 @@
 
 > **Core Philosophy**: Orchestration is its own concern — separate it from execution.
 
-One codebase builds TWO Docker images: a lightweight orchestrator (~250MB) and a heavy worker with GDAL (~2-3GB). The orchestrator coordinates; workers execute.
+One codebase builds THREE deployment targets:
 
-For architecture details, see `docs/ARCHITECTURE.md`. For deployment, see `docs/DEPLOYMENT.md`.
+| Target | Base | Size | Purpose |
+|--------|------|------|---------|
+| **Function App** | Azure Functions | ~50MB | Gateway: job submission, status queries, HTTP proxy |
+| **DAG Orchestrator** | python:3.12-slim | ~250MB | Coordination: main loop, heartbeat, orphan recovery |
+| **DAG Worker** | osgeo/gdal:ubuntu-full | ~2-3GB | Execution: GDAL processing, heavy ETL |
+
+For architecture details, see `docs/ARCHITECTURE.md`.
 
 ---
 
@@ -34,7 +40,7 @@ For architecture details, see `docs/ARCHITECTURE.md`. For deployment, see `docs/
 
 8. **Observable by default** — Every state transition logs a JobEvent.
 
-9. **Defensive concurrency** — PostgreSQL advisory locks prevent multi-instance conflicts. Optimistic locking (version columns) detects concurrent modifications. See `ADVANCED.md` Section 12.
+9. **Defensive concurrency** — PostgreSQL advisory locks prevent multi-instance conflicts. Optimistic locking (version columns) detects concurrent modifications. See `docs/IMPLEMENTATION.md` Section 12.
 
 ---
 
@@ -89,6 +95,26 @@ All models use Pydantic V2 patterns:
 - `@computed_field` for derived properties
 - `.model_dump()` (not `.dict()`)
 - `.model_validate()` for deserialization
+
+### Jinja2 Template Key Names (CRITICAL)
+
+**Do NOT use Python dict method names as input/output keys in templates.**
+
+Jinja2 resolves `{{ dict.items }}` as the built-in `dict.items()` method, NOT as `dict["items"]`. Reserved names that will break:
+
+`items`, `keys`, `values`, `get`, `update`, `pop`, `clear`, `copy`, `setdefault`
+
+```yaml
+# WRONG - "items" shadows dict.items() method
+params:
+  items: "{{ inputs.items }}"
+
+# CORRECT - use a non-conflicting name
+params:
+  item_list: "{{ inputs.item_list }}"
+```
+
+This affects `{{ inputs.* }}`, `{{ nodes.*.output.* }}`, and fan-out `source` expressions.
 
 ### Logging
 
@@ -275,11 +301,27 @@ job.can_transition_to(new_status)  # Validates state transition
 ### Run Locally
 
 ```bash
-# Orchestrator mode
+# Function App (Gateway) - requires Azure Functions Core Tools
+cp local.settings.json.example local.settings.json  # Edit with your settings
+func start
+
+# Orchestrator mode (Docker app)
 RUN_MODE=orchestrator python -m uvicorn main:app --host 0.0.0.0 --port 8000
 
-# Worker mode
+# Worker mode (Docker app)
 RUN_MODE=worker WORKER_TYPE=docker WORKER_QUEUE=container-tasks python -m worker.main
+```
+
+### Function App Endpoints
+
+```
+/api/livez              - Liveness probe (always 200)
+/api/readyz             - Readiness probe (checks startup)
+/api/gateway/submit     - Submit job to queue
+/api/status/job/{id}    - Get job status
+/api/status/jobs        - List jobs
+/api/admin/health       - Health check with DB connectivity
+/api/proxy/{target}/{p} - Forward to orchestrator/worker
 ```
 
 ### Python Environment
@@ -294,9 +336,6 @@ conda activate azgeo
 
 | Document | Purpose |
 |----------|---------|
-| `docs/ARCHITECTURE.md` | System design, data flows, schemas, handlers |
-| `docs/DEPLOYMENT.md` | Azure resources, build commands, environment variables |
-| `TODO.md` | Implementation plan and status |
-| `LOOP.md` | Step-by-step orchestrator execution trace |
-| `PATTERNS.md` | Advanced DAG patterns (conditional, fan-out, fan-in) |
-| `ADVANCED.md` | Detailed implementation specs for all features |
+| `docs/ARCHITECTURE.md` | System design, data flows, schemas, patterns, deployment |
+| `docs/IMPLEMENTATION.md` | Detailed specs, code examples, task checklists |
+| `docs/TODO.md` | Progress tracking and next priorities |

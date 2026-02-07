@@ -1,0 +1,30 @@
+# ============================================================================
+# FUNCTION APP DEPENDENCIES
+# ============================================================================
+# EPOCH: 5 - DAG ORCHESTRATION
+# PURPOSE: Minimal dependencies for Azure Function App deployment
+# CREATED: 04 FEB 2026
+# ============================================================================
+#
+# This file contains ONLY the dependencies needed for the function app.
+# The .funcignore file excludes heavy modules to keep deployment small.
+#
+# Estimated package size: ~50MB (vs ~250MB for full orchestrator)
+#
+# ============================================================================
+
+# Azure Functions Runtime
+azure-functions>=1.17.0
+
+# Service Bus Messaging (for job submission)
+azure-servicebus>=7.11.0
+azure-identity>=1.15.0
+
+# Database Access (read-only queries)
+psycopg[binary]>=3.1.0
+
+# Schema Validation (Pydantic V2)
+pydantic>=2.5.0
+
+# HTTP Client (for proxy to Docker apps)
+httpx>=0.26.0
