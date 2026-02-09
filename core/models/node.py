@@ -162,7 +162,7 @@ class NodeState(NodeData):
 
         Valid transitions:
             PENDING -> READY, SKIPPED
-            READY -> DISPATCHED, SKIPPED
+            READY -> DISPATCHED, FAILED (template error), SKIPPED
             DISPATCHED -> RUNNING, FAILED (timeout)
             RUNNING -> COMPLETED, FAILED
             COMPLETED, FAILED, SKIPPED -> (none, terminal)
@@ -174,7 +174,7 @@ class NodeState(NodeData):
 
         allowed = {
             NodeStatus.PENDING: {NodeStatus.READY, NodeStatus.SKIPPED},
-            NodeStatus.READY: {NodeStatus.DISPATCHED, NodeStatus.SKIPPED},
+            NodeStatus.READY: {NodeStatus.DISPATCHED, NodeStatus.FAILED, NodeStatus.SKIPPED},
             NodeStatus.DISPATCHED: {NodeStatus.RUNNING, NodeStatus.FAILED},
             NodeStatus.RUNNING: {NodeStatus.COMPLETED, NodeStatus.FAILED},
             NodeStatus.COMPLETED: set(),

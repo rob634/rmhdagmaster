@@ -52,9 +52,9 @@ nodes:
     queue: container-tasks
     params:
       blob_path: "{{ inputs.blob_path }}"
-      storage_account: "{{ inputs.storage_account }}"
-      input_crs: "{{ inputs.input_crs }}"
-      raster_type: "{{ inputs.raster_type }}"
+      storage_account: "{{ inputs.storage_account | default('', true) }}"
+      input_crs: "{{ inputs.input_crs | default('', true) }}"
+      raster_type: "{{ inputs.raster_type | default('auto', true) }}"
     timeout_seconds: 300
     retry:
       max_attempts: 2
