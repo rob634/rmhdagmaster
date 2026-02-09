@@ -108,6 +108,7 @@ if [ "$DEPLOY_ONLY" != true ]; then
     cd "$PROJECT_ROOT"
     az acr build --registry "$REGISTRY" \
         --image "${ORCHESTRATOR_IMAGE}:v${VERSION}" \
+        --platform linux/amd64 \
         -f Dockerfile . \
         --no-logs
 
@@ -119,6 +120,7 @@ if [ "$DEPLOY_ONLY" != true ]; then
 
     az acr build --registry "$REGISTRY" \
         --image "${WORKER_IMAGE}:v${VERSION}" \
+        --platform linux/amd64 \
         -f Dockerfile.worker . \
         --no-logs
 
