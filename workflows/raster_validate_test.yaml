@@ -19,7 +19,16 @@ inputs:
   blob_path:
     type: string
     required: true
-    description: Path to raster file (local path, blob URL, or /vsiaz/ path)
+    description: >
+      Path to raster file. Supports:
+      - Local path: /mnt/data/file.tif
+      - HTTPS URL: https://account.blob.core.windows.net/container/blob?sas
+      - GDAL virtual path: /vsiaz/container/blob or /vsicurl/url
+      - Blob reference: container_name/path/to/blob.tif (auto-generates SAS URL)
+  storage_account:
+    type: string
+    required: false
+    description: Azure storage account name (for blob reference resolution, defaults to AZURE_STORAGE_ACCOUNT env var)
   input_crs:
     type: string
     required: false
@@ -43,6 +52,7 @@ nodes:
     queue: container-tasks
     params:
       blob_path: "{{ inputs.blob_path }}"
+      storage_account: "{{ inputs.storage_account }}"
       input_crs: "{{ inputs.input_crs }}"
       raster_type: "{{ inputs.raster_type }}"
     timeout_seconds: 300

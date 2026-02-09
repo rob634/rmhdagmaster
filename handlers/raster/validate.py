@@ -87,6 +87,7 @@ async def validate(ctx: HandlerContext) -> HandlerResult:
     input_crs = ctx.params.get("input_crs")
     raster_type_hint = ctx.params.get("raster_type", "auto")
     output_tier = ctx.params.get("output_tier", "analysis")
+    storage_account = ctx.params.get("storage_account")
 
     if not local_path:
         return HandlerResult.failure_result(
@@ -94,6 +95,10 @@ async def validate(ctx: HandlerContext) -> HandlerResult:
         )
 
     logger.info(f"Validating raster: {local_path}")
+
+    # Resolve blob references to SAS URLs
+    # Format: "container_name/path/to/blob.tif" → generates ephemeral SAS URL
+    local_path = _resolve_blob_path(local_path, storage_account)
 
     # =========================================================================
     # STEP 1: Open file and extract basic metadata
@@ -394,6 +399,45 @@ def _determine_applicable_tiers(band_count: int, dtype: str) -> list:
         tiers.insert(0, "visualization")
 
     return tiers
+
+
+def _resolve_blob_path(path: str, storage_account: Optional[str] = None) -> str:
+    """
+    Resolve blob references to SAS URLs for rasterio/GDAL access.
+
+    Supports these formats:
+    - Local path (/mnt/data/file.tif) → returned as-is
+    - HTTP/HTTPS URL → returned as-is
+    - GDAL virtual paths (/vsicurl/, /vsiaz/) → returned as-is
+    - Blob reference (container/blob_path.tif) → resolved to SAS URL
+
+    For blob references, generates an ephemeral user-delegation SAS token
+    via managed identity (no account keys, no persistent tokens).
+    """
+    # Already a URL or GDAL virtual path — use directly
+    if path.startswith(("http://", "https://", "/vsicurl/", "/vsiaz/")):
+        return path
+
+    # Absolute local path — use directly
+    if path.startswith("/"):
+        return path
+
+    # Blob reference: "container/path/to/blob.tif"
+    # Split on first / to get container and blob name
+    if "/" in path:
+        container, blob_name = path.split("/", 1)
+        try:
+            from infrastructure.storage import BlobRepository
+            repo = BlobRepository(account_name=storage_account) if storage_account else BlobRepository()
+            sas_url = repo.get_blob_sas_url(container=container, blob_path=blob_name, hours=1)
+            logger.info(f"Resolved blob reference to SAS URL: {container}/{blob_name}")
+            return sas_url
+        except Exception as e:
+            logger.error(f"Failed to resolve blob reference '{path}': {e}")
+            raise ValueError(f"BLOB_RESOLVE_FAILED: Cannot generate SAS URL for '{path}': {e}")
+
+    # Doesn't match any pattern
+    return path
 
 
 def _dtype_to_bytes(dtype: str) -> int:

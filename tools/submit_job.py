@@ -227,7 +227,8 @@ Examples:
             orchestrator_url=args.orchestrator_url,
             timeout=args.timeout,
         )
-        if result and result.get("status") == "completed":
+        job_status = result.get("job", {}).get("status") if result else None
+        if job_status == "completed":
             sys.exit(0)
         else:
             sys.exit(1)

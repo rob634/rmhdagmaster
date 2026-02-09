@@ -66,7 +66,8 @@ class BlobRepository:
     def __new__(cls, account_name: Optional[str] = None, **kwargs):
         """Multi-instance singleton: one instance per storage account."""
         account_name = account_name or os.environ.get(
-            "AZURE_STORAGE_ACCOUNT", "rmhgeostorage"
+            "AZURE_STORAGE_ACCOUNT",
+            os.environ.get("AZURE_STORAGE_ACCOUNT_NAME", "rmhgeostorage"),
         )
 
         with cls._instances_lock:
