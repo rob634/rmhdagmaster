@@ -33,7 +33,7 @@ import asyncio
 import logging
 import os
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, Dict, Any, List
 
 from psycopg_pool import AsyncConnectionPool
@@ -1139,7 +1139,7 @@ class Orchestrator:
         """
         node_repo = NodeRepository(self.pool)
         all_nodes = await node_repo.get_all_for_job(job.job_id)
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         timed_out = 0
 
         for node in all_nodes:

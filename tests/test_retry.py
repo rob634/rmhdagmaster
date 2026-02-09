@@ -24,7 +24,7 @@ Run with:
 
 import asyncio
 import pytest
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Set
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -265,9 +265,9 @@ class TestNodeStateRetry:
             task_id="old-task",
         )
         node.error_message = "Some error"
-        node.dispatched_at = datetime.utcnow()
-        node.started_at = datetime.utcnow()
-        node.completed_at = datetime.utcnow()
+        node.dispatched_at = datetime.now(timezone.utc)
+        node.started_at = datetime.now(timezone.utc)
+        node.completed_at = datetime.now(timezone.utc)
 
         assert node.prepare_retry() is True
         assert node.error_message is None
@@ -409,7 +409,7 @@ class TestTimeoutDetection:
         node = make_node(
             "flaky_step",
             status=NodeStatus.DISPATCHED,
-            dispatched_at=datetime.utcnow() - timedelta(seconds=60),
+            dispatched_at=datetime.now(timezone.utc) - timedelta(seconds=60),
             task_id="task-001",
             max_retries=3,
             retry_count=0,
@@ -438,8 +438,8 @@ class TestTimeoutDetection:
         node = make_node(
             "flaky_step",
             status=NodeStatus.RUNNING,
-            dispatched_at=datetime.utcnow() - timedelta(seconds=120),
-            started_at=datetime.utcnow() - timedelta(seconds=60),
+            dispatched_at=datetime.now(timezone.utc) - timedelta(seconds=120),
+            started_at=datetime.now(timezone.utc) - timedelta(seconds=60),
             task_id="task-001",
             max_retries=3,
             retry_count=0,
@@ -467,7 +467,7 @@ class TestTimeoutDetection:
         node = make_node(
             "flaky_step",
             status=NodeStatus.DISPATCHED,
-            dispatched_at=datetime.utcnow() - timedelta(seconds=10),
+            dispatched_at=datetime.now(timezone.utc) - timedelta(seconds=10),
             task_id="task-001",
         )
 
@@ -490,7 +490,7 @@ class TestTimeoutDetection:
         node = make_node(
             "flaky_step",
             status=NodeStatus.DISPATCHED,
-            dispatched_at=datetime.utcnow() - timedelta(seconds=60),
+            dispatched_at=datetime.now(timezone.utc) - timedelta(seconds=60),
             task_id="task-001",
             max_retries=3,
             retry_count=3,  # Already exhausted
@@ -518,7 +518,7 @@ class TestTimeoutDetection:
         node = make_node(
             "split__0",
             status=NodeStatus.DISPATCHED,
-            dispatched_at=datetime.utcnow() - timedelta(seconds=20),
+            dispatched_at=datetime.now(timezone.utc) - timedelta(seconds=20),
             task_id="task-001",
             parent_node_id="split",
             fan_out_index=0,
@@ -582,7 +582,7 @@ class TestTimeoutDetection:
         node = make_node(
             "mystery_node",
             status=NodeStatus.DISPATCHED,
-            dispatched_at=datetime.utcnow() - timedelta(seconds=120),
+            dispatched_at=datetime.now(timezone.utc) - timedelta(seconds=120),
             task_id="task-001",
             max_retries=3,
             retry_count=0,
@@ -608,7 +608,7 @@ class TestTimeoutDetection:
         node = make_node(
             "flaky_step",
             status=NodeStatus.DISPATCHED,
-            dispatched_at=datetime.utcnow() - timedelta(seconds=60),
+            dispatched_at=datetime.now(timezone.utc) - timedelta(seconds=60),
             task_id="task-001",
             max_retries=3,
             retry_count=0,
