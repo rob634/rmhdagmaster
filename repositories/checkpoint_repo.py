@@ -16,6 +16,7 @@ import logging
 from datetime import datetime
 from typing import List, Optional, Dict, Any
 
+from psycopg import sql
 from psycopg.rows import dict_row
 from psycopg.types.json import Json
 from psycopg_pool import AsyncConnectionPool
@@ -44,8 +45,8 @@ class CheckpointRepository:
         """
         async with self.pool.connection() as conn:
             await conn.execute(
-                f"""
-                INSERT INTO {TABLE_CHECKPOINTS} (
+                sql.SQL("""
+                INSERT INTO {} (
                     checkpoint_id, job_id, node_id, task_id,
                     phase_name, phase_index, total_phases,
                     progress_current, progress_total, progress_percent, progress_message,
@@ -60,7 +61,7 @@ class CheckpointRepository:
                     %(memory_usage_mb)s, %(disk_usage_mb)s, %(error_count)s,
                     %(created_at)s, %(updated_at)s, %(is_final)s, %(is_valid)s
                 )
-                """,
+                """).format(TABLE_CHECKPOINTS),
                 {
                     "checkpoint_id": checkpoint.checkpoint_id,
                     "job_id": checkpoint.job_id,
@@ -105,7 +106,7 @@ class CheckpointRepository:
         async with self.pool.connection() as conn:
             conn.row_factory = dict_row
             result = await conn.execute(
-                f"SELECT * FROM {TABLE_CHECKPOINTS} WHERE checkpoint_id = %s",
+                sql.SQL("SELECT * FROM {} WHERE checkpoint_id = %s").format(TABLE_CHECKPOINTS),
                 (checkpoint_id,),
             )
             row = await result.fetchone()
@@ -135,18 +136,20 @@ class CheckpointRepository:
         async with self.pool.connection() as conn:
             conn.row_factory = dict_row
 
-            query = f"""
-                SELECT * FROM {TABLE_CHECKPOINTS}
-                WHERE job_id = %s AND node_id = %s
-            """
-            params = [job_id, node_id]
-
             if valid_only:
-                query += " AND is_valid = true"
+                query = sql.SQL(
+                    "SELECT * FROM {} "
+                    "WHERE job_id = %s AND node_id = %s AND is_valid = true "
+                    "ORDER BY created_at DESC LIMIT 1"
+                ).format(TABLE_CHECKPOINTS)
+            else:
+                query = sql.SQL(
+                    "SELECT * FROM {} "
+                    "WHERE job_id = %s AND node_id = %s "
+                    "ORDER BY created_at DESC LIMIT 1"
+                ).format(TABLE_CHECKPOINTS)
 
-            query += " ORDER BY created_at DESC LIMIT 1"
-
-            result = await conn.execute(query, tuple(params))
+            result = await conn.execute(query, (job_id, node_id))
             row = await result.fetchone()
 
             if row is None:
@@ -167,12 +170,12 @@ class CheckpointRepository:
         async with self.pool.connection() as conn:
             conn.row_factory = dict_row
             result = await conn.execute(
-                f"""
-                SELECT * FROM {TABLE_CHECKPOINTS}
+                sql.SQL("""
+                SELECT * FROM {}
                 WHERE task_id = %s AND is_valid = true
                 ORDER BY created_at DESC
                 LIMIT 1
-                """,
+                """).format(TABLE_CHECKPOINTS),
                 (task_id,),
             )
             row = await result.fetchone()
@@ -202,12 +205,12 @@ class CheckpointRepository:
         async with self.pool.connection() as conn:
             conn.row_factory = dict_row
             result = await conn.execute(
-                f"""
-                SELECT * FROM {TABLE_CHECKPOINTS}
+                sql.SQL("""
+                SELECT * FROM {}
                 WHERE job_id = %s AND node_id = %s
                 ORDER BY created_at DESC
                 LIMIT %s
-                """,
+                """).format(TABLE_CHECKPOINTS),
                 (job_id, node_id, limit),
             )
             rows = await result.fetchall()
@@ -227,8 +230,8 @@ class CheckpointRepository:
 
         async with self.pool.connection() as conn:
             result = await conn.execute(
-                f"""
-                UPDATE {TABLE_CHECKPOINTS} SET
+                sql.SQL("""
+                UPDATE {} SET
                     phase_name = %(phase_name)s,
                     phase_index = %(phase_index)s,
                     progress_current = %(progress_current)s,
@@ -245,7 +248,7 @@ class CheckpointRepository:
                     is_final = %(is_final)s,
                     is_valid = %(is_valid)s
                 WHERE checkpoint_id = %(checkpoint_id)s
-                """,
+                """).format(TABLE_CHECKPOINTS),
                 {
                     "checkpoint_id": checkpoint.checkpoint_id,
                     "phase_name": checkpoint.phase_name,
@@ -294,14 +297,14 @@ class CheckpointRepository:
         async with self.pool.connection() as conn:
             if reason:
                 result = await conn.execute(
-                    f"""
-                    UPDATE {TABLE_CHECKPOINTS}
+                    sql.SQL("""
+                    UPDATE {}
                     SET is_valid = false,
                         state_data = COALESCE(state_data, '{{}}'::jsonb) ||
                                      %(invalid_reason)s::jsonb,
                         updated_at = %(updated_at)s
                     WHERE checkpoint_id = %(checkpoint_id)s
-                    """,
+                    """).format(TABLE_CHECKPOINTS),
                     {
                         "checkpoint_id": checkpoint_id,
                         "invalid_reason": Json({"invalid_reason": reason}),
@@ -310,11 +313,11 @@ class CheckpointRepository:
                 )
             else:
                 result = await conn.execute(
-                    f"""
-                    UPDATE {TABLE_CHECKPOINTS}
+                    sql.SQL("""
+                    UPDATE {}
                     SET is_valid = false, updated_at = %s
                     WHERE checkpoint_id = %s
-                    """,
+                    """).format(TABLE_CHECKPOINTS),
                     (datetime.utcnow(), checkpoint_id),
                 )
 
@@ -332,7 +335,7 @@ class CheckpointRepository:
         """
         async with self.pool.connection() as conn:
             result = await conn.execute(
-                f"DELETE FROM {TABLE_CHECKPOINTS} WHERE job_id = %s",
+                sql.SQL("DELETE FROM {} WHERE job_id = %s").format(TABLE_CHECKPOINTS),
                 (job_id,),
             )
             count = result.rowcount
@@ -353,7 +356,7 @@ class CheckpointRepository:
         async with self.pool.connection() as conn:
             conn.row_factory = dict_row
             result = await conn.execute(
-                f"SELECT COUNT(*) as count FROM {TABLE_CHECKPOINTS} WHERE job_id = %s",
+                sql.SQL("SELECT COUNT(*) as count FROM {} WHERE job_id = %s").format(TABLE_CHECKPOINTS),
                 (job_id,),
             )
             row = await result.fetchone()

@@ -16,6 +16,7 @@ import logging
 from datetime import datetime
 from typing import List, Optional, Dict, Any
 
+from psycopg import sql
 from psycopg.rows import dict_row
 from psycopg.types.json import Json
 from psycopg_pool import AsyncConnectionPool
@@ -45,8 +46,8 @@ class NodeRepository:
         """
         async with self.pool.connection() as conn:
             await conn.execute(
-                f"""
-                INSERT INTO {TABLE_NODES} (
+                sql.SQL("""
+                INSERT INTO {} (
                     job_id, node_id, status, task_id, output, error_message,
                     retry_count, max_retries, created_at, dispatched_at,
                     started_at, completed_at, updated_at,
@@ -58,7 +59,7 @@ class NodeRepository:
                     %(completed_at)s, %(updated_at)s,
                     %(parent_node_id)s, %(fan_out_index)s, %(input_params)s
                 )
-                """,
+                """).format(TABLE_NODES),
                 {
                     "job_id": node.job_id,
                     "node_id": node.node_id,
@@ -98,8 +99,8 @@ class NodeRepository:
             async with conn.cursor() as cur:
                 for node in nodes:
                     await cur.execute(
-                        f"""
-                        INSERT INTO {TABLE_NODES} (
+                        sql.SQL("""
+                        INSERT INTO {} (
                             job_id, node_id, status, task_id, output, error_message,
                             retry_count, max_retries, created_at, dispatched_at,
                             started_at, completed_at, updated_at,
@@ -111,7 +112,7 @@ class NodeRepository:
                             %(completed_at)s, %(updated_at)s,
                             %(parent_node_id)s, %(fan_out_index)s, %(input_params)s
                         )
-                        """,
+                        """).format(TABLE_NODES),
                         {
                             "job_id": node.job_id,
                             "node_id": node.node_id,
@@ -148,7 +149,7 @@ class NodeRepository:
         async with self.pool.connection() as conn:
             conn.row_factory = dict_row
             result = await conn.execute(
-                f"SELECT * FROM {TABLE_NODES} WHERE job_id = %s AND node_id = %s",
+                sql.SQL("SELECT * FROM {} WHERE job_id = %s AND node_id = %s").format(TABLE_NODES),
                 (job_id, node_id),
             )
             row = await result.fetchone()
@@ -171,7 +172,7 @@ class NodeRepository:
         async with self.pool.connection() as conn:
             conn.row_factory = dict_row
             result = await conn.execute(
-                f"SELECT * FROM {TABLE_NODES} WHERE job_id = %s ORDER BY created_at",
+                sql.SQL("SELECT * FROM {} WHERE job_id = %s ORDER BY created_at").format(TABLE_NODES),
                 (job_id,),
             )
             rows = await result.fetchall()
@@ -193,8 +194,8 @@ class NodeRepository:
         """
         async with self.pool.connection() as conn:
             result = await conn.execute(
-                f"""
-                UPDATE {TABLE_NODES} SET
+                sql.SQL("""
+                UPDATE {} SET
                     status = %(status)s,
                     task_id = %(task_id)s,
                     output = %(output)s,
@@ -206,7 +207,7 @@ class NodeRepository:
                 WHERE job_id = %(job_id)s
                   AND node_id = %(node_id)s
                   AND version = %(version)s
-                """,
+                """).format(TABLE_NODES),
                 {
                     "job_id": node.job_id,
                     "node_id": node.node_id,
@@ -249,11 +250,11 @@ class NodeRepository:
         async with self.pool.connection() as conn:
             conn.row_factory = dict_row
             result = await conn.execute(
-                f"""
-                SELECT * FROM {TABLE_NODES}
+                sql.SQL("""
+                SELECT * FROM {}
                 WHERE job_id = %s AND status = 'ready'
                 ORDER BY created_at
-                """,
+                """).format(TABLE_NODES),
                 (job_id,),
             )
             rows = await result.fetchall()
@@ -272,11 +273,11 @@ class NodeRepository:
         async with self.pool.connection() as conn:
             conn.row_factory = dict_row
             result = await conn.execute(
-                f"""
-                SELECT * FROM {TABLE_NODES}
+                sql.SQL("""
+                SELECT * FROM {}
                 WHERE job_id = %s AND status = 'pending'
                 ORDER BY created_at
-                """,
+                """).format(TABLE_NODES),
                 (job_id,),
             )
             rows = await result.fetchall()
@@ -295,12 +296,12 @@ class NodeRepository:
         async with self.pool.connection() as conn:
             conn.row_factory = dict_row
             result = await conn.execute(
-                f"""
+                sql.SQL("""
                 SELECT status, COUNT(*) as count
-                FROM {TABLE_NODES}
+                FROM {}
                 WHERE job_id = %s
                 GROUP BY status
-                """,
+                """).format(TABLE_NODES),
                 (job_id,),
             )
             rows = await result.fetchall()
@@ -319,11 +320,11 @@ class NodeRepository:
         async with self.pool.connection() as conn:
             conn.row_factory = dict_row
             result = await conn.execute(
-                f"""
-                SELECT COUNT(*) as count FROM {TABLE_NODES}
+                sql.SQL("""
+                SELECT COUNT(*) as count FROM {}
                 WHERE job_id = %s
                 AND status NOT IN ('completed', 'failed', 'skipped')
-                """,
+                """).format(TABLE_NODES),
                 (job_id,),
             )
             row = await result.fetchone()
@@ -342,11 +343,11 @@ class NodeRepository:
         async with self.pool.connection() as conn:
             conn.row_factory = dict_row
             result = await conn.execute(
-                f"""
-                SELECT 1 as failed FROM {TABLE_NODES}
+                sql.SQL("""
+                SELECT 1 as failed FROM {}
                 WHERE job_id = %s AND status = 'failed'
                 LIMIT 1
-                """,
+                """).format(TABLE_NODES),
                 (job_id,),
             )
             return await result.fetchone() is not None
@@ -371,12 +372,12 @@ class NodeRepository:
         now = datetime.utcnow()
         async with self.pool.connection() as conn:
             result = await conn.execute(
-                f"""
-                UPDATE {TABLE_NODES}
+                sql.SQL("""
+                UPDATE {}
                 SET status = 'dispatched', task_id = %s,
                     dispatched_at = %s, updated_at = %s
                 WHERE job_id = %s AND node_id = %s AND status = 'ready'
-                """,
+                """).format(TABLE_NODES),
                 (task_id, now, now, job_id, node_id),
             )
             return result.rowcount > 0
@@ -400,21 +401,21 @@ class NodeRepository:
             conn.row_factory = dict_row
             if status:
                 result = await conn.execute(
-                    f"""
-                    SELECT * FROM {TABLE_NODES}
+                    sql.SQL("""
+                    SELECT * FROM {}
                     WHERE status = %s
                     ORDER BY updated_at DESC
                     LIMIT %s
-                    """,
+                    """).format(TABLE_NODES),
                     (status.value, limit),
                 )
             else:
                 result = await conn.execute(
-                    f"""
-                    SELECT * FROM {TABLE_NODES}
+                    sql.SQL("""
+                    SELECT * FROM {}
                     ORDER BY updated_at DESC
                     LIMIT %s
-                    """,
+                    """).format(TABLE_NODES),
                     (limit,),
                 )
             rows = await result.fetchall()
@@ -433,12 +434,12 @@ class NodeRepository:
         async with self.pool.connection() as conn:
             conn.row_factory = dict_row
             result = await conn.execute(
-                f"""
-                SELECT * FROM {TABLE_NODES}
+                sql.SQL("""
+                SELECT * FROM {}
                 WHERE status NOT IN ('completed', 'failed', 'skipped')
                 ORDER BY updated_at DESC
                 LIMIT %s
-                """,
+                """).format(TABLE_NODES),
                 (limit,),
             )
             rows = await result.fetchall()
@@ -454,11 +455,11 @@ class NodeRepository:
         async with self.pool.connection() as conn:
             conn.row_factory = dict_row
             result = await conn.execute(
-                f"""
+                sql.SQL("""
                 SELECT status, COUNT(*) as count
-                FROM {TABLE_NODES}
+                FROM {}
                 GROUP BY status
-                """
+                """).format(TABLE_NODES),
             )
             rows = await result.fetchall()
             return {row["status"]: row["count"] for row in rows}
@@ -481,11 +482,11 @@ class NodeRepository:
         async with self.pool.connection() as conn:
             conn.row_factory = dict_row
             result = await conn.execute(
-                f"""
-                SELECT * FROM {TABLE_NODES}
+                sql.SQL("""
+                SELECT * FROM {}
                 WHERE job_id = %s AND parent_node_id = %s
                 ORDER BY fan_out_index
-                """,
+                """).format(TABLE_NODES),
                 (job_id, parent_node_id),
             )
             rows = await result.fetchall()
@@ -509,11 +510,11 @@ class NodeRepository:
         async with self.pool.connection() as conn:
             conn.row_factory = dict_row
             result = await conn.execute(
-                f"""
-                SELECT COUNT(*) as count FROM {TABLE_NODES}
+                sql.SQL("""
+                SELECT COUNT(*) as count FROM {}
                 WHERE job_id = %s AND parent_node_id = %s
                 AND status NOT IN ('completed', 'failed', 'skipped')
-                """,
+                """).format(TABLE_NODES),
                 (job_id, parent_node_id),
             )
             row = await result.fetchone()

@@ -26,6 +26,9 @@ from core.models.task import TaskMessage, TaskResult
 from core.models.events import JobEvent, EventType, EventStatus
 from core.models.checkpoint import Checkpoint
 from core.models.lease import OrchestratorLease
+from core.models.platform import Platform
+from core.models.geospatial_asset import GeospatialAsset
+from core.models.asset_version import AssetVersion
 
 __all__ = [
     # Workflow
@@ -49,4 +52,8 @@ __all__ = [
     "EventStatus",
     # Lease
     "OrchestratorLease",
+    # Domain models
+    "Platform",
+    "GeospatialAsset",
+    "AssetVersion",
 ]

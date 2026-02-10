@@ -27,6 +27,9 @@ from .node_repo import NodeRepository
 from .task_repo import TaskResultRepository
 from .event_repo import EventRepository
 from .checkpoint_repo import CheckpointRepository
+from .platform_repo import PlatformRepository
+from .asset_repo import AssetRepository
+from .version_repo import AssetVersionRepository
 
 __all__ = [
     "get_pool",
@@ -38,4 +41,7 @@ __all__ = [
     "TaskResultRepository",
     "EventRepository",
     "CheckpointRepository",
+    "PlatformRepository",
+    "AssetRepository",
+    "AssetVersionRepository",
 ]

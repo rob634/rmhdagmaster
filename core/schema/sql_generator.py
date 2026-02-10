@@ -287,12 +287,13 @@ END$$
                         sql.SQL("."),
                         sql.Identifier(sql_type_str)
                     ])
+                elif isinstance(field_info.default, bool):
+                    # bool check MUST come before (int, float) because bool is a subclass of int
+                    column_parts.extend([sql.SQL(" DEFAULT "), sql.SQL("true" if field_info.default else "false")])
                 elif isinstance(field_info.default, str):
                     column_parts.extend([sql.SQL(" DEFAULT "), sql.Literal(field_info.default)])
                 elif isinstance(field_info.default, (int, float)):
                     column_parts.extend([sql.SQL(" DEFAULT "), sql.Literal(field_info.default)])
-                elif isinstance(field_info.default, bool):
-                    column_parts.extend([sql.SQL(" DEFAULT "), sql.SQL("true" if field_info.default else "false")])
 
             # Handle default_factory for timestamps and dicts
             if hasattr(field_info, 'default_factory') and field_info.default_factory is not None:
@@ -423,9 +424,15 @@ END$$
         Returns:
             List of sql.Composed statements ready for execution
         """
-        from core.models import Job, NodeState, JobEvent, Checkpoint, OrchestratorLease
+        from core.models import (
+            Job, NodeState, JobEvent, Checkpoint, OrchestratorLease,
+            Platform, GeospatialAsset, AssetVersion,
+        )
         from core.models.task import TaskResult
-        from core.contracts import JobStatus, NodeStatus, TaskStatus
+        from core.contracts import (
+            JobStatus, NodeStatus, TaskStatus,
+            ApprovalState, ClearanceState, ProcessingStatus,
+        )
 
         statements = []
 
@@ -439,17 +446,22 @@ END$$
         # Search path
         statements.append(SchemaUtils.set_search_path(self.schema_name))
 
-        # Generate ENUMs
+        # Generate ENUMs — execution enums
         statements.extend(self.generate_enum("job_status", JobStatus, self.schema_name))
         statements.extend(self.generate_enum("node_status", NodeStatus, self.schema_name))
         statements.extend(self.generate_enum("task_status", TaskStatus, self.schema_name))
 
-        # Import event enums
+        # Event enums
         from core.models.events import EventType, EventStatus
         statements.extend(self.generate_enum("event_type", EventType, self.schema_name))
         statements.extend(self.generate_enum("event_status", EventStatus, self.schema_name))
 
-        # Generate tables
+        # Domain enums
+        statements.extend(self.generate_enum("approval_state", ApprovalState, self.schema_name))
+        statements.extend(self.generate_enum("clearance_state", ClearanceState, self.schema_name))
+        statements.extend(self.generate_enum("processing_status", ProcessingStatus, self.schema_name))
+
+        # Generate tables — execution tables
         statements.append(self.generate_table(Job))
         statements.append(self.generate_table(NodeState))
         statements.append(self.generate_table(TaskResult))
@@ -457,7 +469,12 @@ END$$
         statements.append(self.generate_table(Checkpoint))
         statements.append(self.generate_table(OrchestratorLease))
 
-        # Generate indexes
+        # Domain model tables (dependency order: Platform → GeospatialAsset → AssetVersion)
+        statements.append(self.generate_table(Platform))
+        statements.append(self.generate_table(GeospatialAsset))
+        statements.append(self.generate_table(AssetVersion))
+
+        # Generate indexes — execution tables
         statements.extend(self.generate_indexes(Job))
         statements.extend(self.generate_indexes(NodeState))
         statements.extend(self.generate_indexes(TaskResult))
@@ -465,10 +482,18 @@ END$$
         statements.extend(self.generate_indexes(Checkpoint))
         # OrchestratorLease has no custom indexes (just PK)
 
+        # Domain model indexes
+        statements.extend(self.generate_indexes(Platform))
+        statements.extend(self.generate_indexes(GeospatialAsset))
+        statements.extend(self.generate_indexes(AssetVersion))
+
         # Generate updated_at triggers
         statements.append(TriggerBuilder.updated_at_function(self.schema_name))
         statements.extend(TriggerBuilder.updated_at_trigger(self.schema_name, "dag_jobs"))
         statements.extend(TriggerBuilder.updated_at_trigger(self.schema_name, "dag_node_states"))
+        statements.extend(TriggerBuilder.updated_at_trigger(self.schema_name, "platforms"))
+        statements.extend(TriggerBuilder.updated_at_trigger(self.schema_name, "geospatial_assets"))
+        statements.extend(TriggerBuilder.updated_at_trigger(self.schema_name, "asset_versions"))
 
         logger.info(f"Generated {len(statements)} DDL statements for schema {self.schema_name}")
         return statements

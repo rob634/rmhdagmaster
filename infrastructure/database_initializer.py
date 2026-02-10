@@ -124,7 +124,10 @@ class DatabaseInitializer:
     """
 
     SCHEMA_NAME = "dagapp"
-    EXPECTED_TABLES = ["dag_jobs", "dag_node_states", "dag_task_results", "dag_job_events", "dag_checkpoints"]
+    EXPECTED_TABLES = [
+        "dag_jobs", "dag_node_states", "dag_task_results", "dag_job_events", "dag_checkpoints",
+        "platforms", "geospatial_assets", "asset_versions",
+    ]
 
     def __init__(self):
         """

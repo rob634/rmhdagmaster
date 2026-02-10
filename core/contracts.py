@@ -87,6 +87,60 @@ class TaskStatus(str, Enum):
 
 
 # ============================================================================
+# BUSINESS DOMAIN ENUMS
+# ============================================================================
+
+class ApprovalState(str, Enum):
+    """
+    Approval lifecycle for asset versions.
+
+    State transitions:
+        PENDING_REVIEW -> APPROVED
+                       -> REJECTED
+    """
+    PENDING_REVIEW = "pending_review"  # Awaiting review
+    APPROVED = "approved"              # Approved for service
+    REJECTED = "rejected"              # Rejected by reviewer
+
+    def is_terminal(self) -> bool:
+        """Check if this is a resolved state."""
+        return self in (ApprovalState.APPROVED, ApprovalState.REJECTED)
+
+
+class ClearanceState(str, Enum):
+    """
+    Clearance level for geospatial assets.
+    Lives on GeospatialAsset (all versions share one clearance).
+
+    State transitions:
+        UNCLEARED -> OUO -> PUBLIC
+    """
+    UNCLEARED = "uncleared"  # Not yet classified
+    OUO = "ouo"              # Official Use Only (internal)
+    PUBLIC = "public"        # Publicly accessible (triggers ADF export)
+
+
+class ProcessingStatus(str, Enum):
+    """
+    Processing lifecycle for asset versions.
+    Tracks ETL job progress.
+
+    State transitions:
+        QUEUED -> PROCESSING -> COMPLETED
+                             -> FAILED
+        FAILED -> PROCESSING (reprocessing)
+    """
+    QUEUED = "queued"          # Awaiting ETL job
+    PROCESSING = "processing"  # ETL job running
+    COMPLETED = "completed"    # ETL finished successfully
+    FAILED = "failed"          # ETL finished with error
+
+    def is_terminal(self) -> bool:
+        """Check if this is a terminal state."""
+        return self in (ProcessingStatus.COMPLETED, ProcessingStatus.FAILED)
+
+
+# ============================================================================
 # BASE DATA CONTRACTS
 # ============================================================================
 

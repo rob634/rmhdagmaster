@@ -206,10 +206,17 @@ class DatabasePool:
 
 SCHEMA = "dagapp"
 
-# Table names
-TABLE_JOBS = f"{SCHEMA}.dag_jobs"
-TABLE_NODES = f"{SCHEMA}.dag_node_states"
-TABLE_TASKS = f"{SCHEMA}.dag_task_results"
-TABLE_EVENTS = f"{SCHEMA}.dag_job_events"
-TABLE_WORKFLOWS = f"{SCHEMA}.dag_workflows"
-TABLE_CHECKPOINTS = f"{SCHEMA}.dag_checkpoints"
+# Table identifiers — use with psycopg sql.SQL().format() for injection-safe queries
+from psycopg import sql as psycopg_sql
+
+TABLE_JOBS = psycopg_sql.Identifier(SCHEMA, "dag_jobs")
+TABLE_NODES = psycopg_sql.Identifier(SCHEMA, "dag_node_states")
+TABLE_TASKS = psycopg_sql.Identifier(SCHEMA, "dag_task_results")
+TABLE_EVENTS = psycopg_sql.Identifier(SCHEMA, "dag_job_events")
+TABLE_WORKFLOWS = psycopg_sql.Identifier(SCHEMA, "dag_workflows")
+TABLE_CHECKPOINTS = psycopg_sql.Identifier(SCHEMA, "dag_checkpoints")
+
+# Domain model tables
+TABLE_PLATFORMS = psycopg_sql.Identifier(SCHEMA, "platforms")
+TABLE_GEOSPATIAL_ASSETS = psycopg_sql.Identifier(SCHEMA, "geospatial_assets")
+TABLE_ASSET_VERSIONS = psycopg_sql.Identifier(SCHEMA, "asset_versions")

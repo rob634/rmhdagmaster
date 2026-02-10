@@ -1,7 +1,7 @@
 # rmhdagmaster Architecture
 
-**Last Updated**: 06 FEB 2026
-**Version**: 0.3.0.0
+**Last Updated**: 09 FEB 2026
+**Version**: 0.12.0
 
 > For implementation details, task checklists, and code specs, see `IMPLEMENTATION.md`.
 
@@ -714,18 +714,22 @@ nodes:
 │    READY    │─────────────────────┐
 └──────┬──────┘                     │
        │ dispatched to queue        │
-       v                            v
-┌─────────────┐               ┌─────────────┐
-│ DISPATCHED  │               │   SKIPPED   │
-└──────┬──────┘               └─────────────┘
-       │ worker picked up           (terminal)
-       v
-┌─────────────┐
-│   RUNNING   │
-└──────┬──────┘
+       │                            v
+       ├───────────────┐      ┌─────────────┐
+       │               │      │   SKIPPED   │
+       v               │      └─────────────┘
+┌─────────────┐        │           (terminal)
+│ DISPATCHED  │        │
+└──────┬──────┘        │ pre-dispatch error
+       │ worker        │ (template failure,
+       │ picked up     │  misconfiguration)
+       v               v
+┌─────────────┐  ┌─────────────┐
+│   RUNNING   │  │   FAILED    │ (from READY)
+└──────┬──────┘  └─────────────┘
        │
        ├─────────────────────┐
-       │ success             │ error
+       │ success             │ error / timeout
        v                     v
 ┌─────────────┐       ┌─────────────┐
 │  COMPLETED  │       │   FAILED    │
@@ -743,11 +747,12 @@ nodes:
 | PENDING | READY | Dependencies satisfied |
 | PENDING | SKIPPED | Conditional branch not taken |
 | READY | DISPATCHED | Task sent to queue |
+| READY | FAILED | Pre-dispatch error (template failure, misconfiguration) |
 | READY | SKIPPED | Conditional evaluation |
 | DISPATCHED | RUNNING | Worker reports RUNNING |
 | DISPATCHED | FAILED | Dispatch timeout |
 | RUNNING | COMPLETED | Handler success |
-| RUNNING | FAILED | Handler error |
+| RUNNING | FAILED | Handler error or task timeout |
 | FAILED | READY | Retry (if retries remain) |
 
 ---
@@ -1230,9 +1235,50 @@ async def validate(ctx: HandlerContext) -> HandlerResult:
 | `hello_world` | Minimal handler for testing |
 | `sleep` | Configurable delay for testing |
 | `fail` | Always fails (for error flow testing) |
+| `flaky_echo` | Configurable failure rate (~20% default) for retry testing |
 | `multi_phase` | Multi-step handler with checkpoints |
 | `size_check` | File size evaluation |
 | `chunk_processor` | Batch processing simulation |
+
+### 9.4 Blob SAS Delegation Pattern
+
+**Status**: DONE (09 FEB 2026) — Verified E2E with 11.3 GB WorldView-2 multispectral image.
+
+Handlers that need blob access use ephemeral user-delegation SAS tokens via managed identity. No account keys, no persistent tokens.
+
+**How it works**:
+
+```
+Workflow YAML:                    Handler receives:
+  blob_path: "bronze/data.tif"   →  _resolve_blob_path("bronze/data.tif", storage_account)
+                                         │
+                                         │ splits on first "/"
+                                         v
+                                  container="bronze", blob="data.tif"
+                                         │
+                                         │ BlobRepository.get_blob_sas_url()
+                                         v
+                                  https://rmhazuregeo.blob.core.windows.net/bronze/data.tif?sv=...&sig=...
+                                         │
+                                         │ 1-hour ephemeral SAS token
+                                         v
+                                  rasterio.open(sas_url)  # GDAL reads via HTTP range requests
+```
+
+**Supported input formats** (in `_resolve_blob_path()`):
+
+| Format | Example | Action |
+|--------|---------|--------|
+| `container/blob_path` | `rmhazuregeobronze/2022dec21wv2.tif` | Generate SAS URL via managed identity |
+| `https://...` | Full blob URL | Pass through unchanged |
+| `/vsicurl/...` | GDAL virtual path | Pass through unchanged |
+| `/local/path` | Absolute local path | Pass through unchanged |
+
+**Key design decisions**:
+- SAS tokens are generated per-request, valid for 1 hour
+- Worker managed identity requires `Storage Blob Data Reader` + `Storage Blob Delegator` roles
+- GDAL/rasterio reads metadata via HTTP range requests — no need to download full file (11.3 GB image metadata read in <1 second)
+- SAS URLs are never logged (security) — only `container/blob_path` is logged before resolution
 
 ---
 
@@ -1355,6 +1401,8 @@ When `shutdown_requested` becomes True, the current phase completes (or saves in
 
 ## 12. Error Handling & Retry
 
+**Status**: DONE (09 FEB 2026) — Timeout detection, retry wiring, and flaky handler verified E2E in Azure.
+
 ### 12.1 Failure Detection
 
 The orchestrator's polling loop provides active failure detection, replacing the passive "wait and hope" approach:
@@ -1363,17 +1411,26 @@ The orchestrator's polling loop provides active failure detection, replacing the
 
 **Epoch 5**: Task starts -> Orchestrator polls every 5 seconds -> Timeout detected!
 
-```python
-for node in nodes_with_status(DISPATCHED):
-    if now() - node.dispatched_at > node.timeout:
-        mark_failed(node, "Timeout")
-        if node.retry_count < node.max_retries:
-            schedule_retry(node)
-        else:
-            fail_job(node.job_id)
+### 12.2 Timeout Detection (`_check_stuck_nodes`)
+
+Integrated into `_process_job()` — runs on every orchestration cycle for each active job. No separate background task needed.
+
+```
+For each active job:
+  1. Load all node states
+  2. Find DISPATCHED or RUNNING nodes
+  3. For each, determine timeout:
+     - Static task node: use node_def.timeout_seconds
+     - Dynamic child node: use parent fan_out task.timeout_seconds
+     - Fallback: DEFAULT_TASK_TIMEOUT_SEC (3600s)
+  4. Compare (now - started_at or dispatched_at) against timeout
+  5. If exceeded: mark_failed() → prepare_retry() if retries remain
+  6. Emit NODE_FAILED event with timeout details
 ```
 
-### 12.2 Retry Policy
+**Important**: Database timestamps are timezone-aware (PostgreSQL `TIMESTAMPTZ`). The timeout check uses `datetime.now(timezone.utc)` — never `datetime.utcnow()` — to avoid `TypeError` on offset-naive vs offset-aware datetime comparison.
+
+### 12.3 Retry Policy
 
 Retry behavior is declared per-node in workflow YAML:
 
@@ -1383,23 +1440,49 @@ nodes:
     type: task
     handler: raster_cog_docker
     retry:
-      max_attempts: 3
-      backoff: exponential
-      initial_delay_seconds: 5
-      max_delay_seconds: 300
+      max_attempts: 5        # 5 retries allowed (6 total attempts)
+      backoff: fixed
+      initial_delay_seconds: 1
+    timeout_seconds: 30
+    next: end
 ```
 
-When a node fails and retries remain, the node transitions from FAILED back to READY and is re-dispatched. The `retry_count` field on the node state tracks the current attempt.
+**Wiring**: `_create_node_states()` in `services/job_service.py` reads `node_def.retry.max_attempts` and sets `NodeState.max_retries` at job creation time. Default is 3 retries if no retry policy specified.
 
-### 12.3 Failure Modes Addressed
+When a node fails and retries remain:
+1. `process_task_result()` or `_check_stuck_nodes()` calls `mark_failed()`
+2. Immediately calls `prepare_retry()` — increments `retry_count`, resets to READY
+3. Next orchestration cycle dispatches the retried node
+4. Task ID includes retry count: `{job_id}_{node_id}_{retry_count}`
+
+### 12.4 Pre-Dispatch Failure
+
+Nodes can fail before reaching a worker (READY → FAILED):
+- Jinja2 template resolution error (e.g., missing required param with `StrictUndefined`)
+- Invalid handler configuration
+- Queue routing failure
+
+These failures still trigger the retry mechanism. Optional template params must use `| default('', true)` to avoid `UndefinedError`.
+
+### 12.5 Failure Modes Addressed
 
 | Failure Mode | Detection | Recovery |
 |--------------|-----------|----------|
 | Worker crash mid-task | Dispatch timeout | Retry with new worker |
 | Handler returns error | Task result with `success: false` | Retry or fail job |
 | Queue message loss | Dispatch timeout (no result arrives) | Retry dispatch |
+| Template resolution error | Exception during dispatch | READY → FAILED, retry |
+| Task exceeds timeout | `_check_stuck_nodes()` per-cycle scan | Mark failed, retry |
 | Orchestrator crash | Heartbeat goes stale | Orphan recovery by another instance |
 | Database connection failure | Exception in loop iteration | Loop continues on next cycle |
+
+### 12.6 E2E Retry Verification
+
+Verified in Azure (09 FEB 2026) using `flaky_echo` handler with 50% failure rate and 5 max retries:
+- `retry_test` workflow: flaky node fails → auto-retries → succeeds within retry budget
+- `retry_fan_out_test` workflow: fan-out children with 30% failure rate all eventually succeed
+- Timeout detection: nodes stuck past `timeout_seconds` are failed and retried automatically
+- 93 unit tests across 4 test files cover retry, timeout, and fan-out retry scenarios
 
 ---
 
@@ -1442,27 +1525,36 @@ B2B Request                              Internal Platform
 DDH sends:                               We generate:
   dataset_id:  "0038272"        ─┐
   resource_id: "shapefile"      ─┼──>    asset_id = SHA256(ddh|{...})[:32]
-  version_id:  "2025-01"        ─┘
-                                         This is OUR identity.
-                                         DDH's scheme is stored as metadata
-                                         in platform_refs (JSONB), but never
-                                         used as a primary key.
+                                ─┘
+                                         NOTE: version_id is NOT part of asset_id.
+                                         Semantic versions are children of the asset,
+                                         not separate assets.
 ```
 
-| Platform | Their Identifiers |
-|----------|-------------------|
-| DDH | dataset_id + resource_id + version_id |
-| ArcGIS | item_id + layer_index |
-| GeoNode | uuid |
-| CKAN | package_id + resource_id |
-| Custom | ??? |
+| Platform | Their Identifiers | In asset_id hash | In AssetVersion |
+|----------|-------------------|-------------------|-----------------|
+| DDH | dataset_id + resource_id + version_id | dataset_id + resource_id | version_id |
+| ArcGIS | item_id + layer_index + version | item_id + layer_index | version |
+| GeoNode | uuid + version | uuid | version |
+| Custom | ??? | identity fields | version field |
 
-The solution: a deterministic hash abstraction.
+The solution: a deterministic hash abstraction that **excludes version**.
 
 ```python
 def generate_asset_id(platform_id: str, platform_refs: dict) -> str:
+    """
+    Generate asset_id from platform identity fields (NOT version).
+    Version is tracked via AssetVersion, not asset identity.
+    """
     composite = f"{platform_id}|{json.dumps(platform_refs, sort_keys=True)}"
     return hashlib.sha256(composite.encode()).hexdigest()[:32]
+
+# Example: version_id is NOT in platform_refs for asset_id generation
+asset_id = generate_asset_id("ddh", {
+    "dataset_id": "0038272",
+    "resource_id": "shapefile"
+})
+# Same asset_id for v1, v2, v3... of this dataset+resource
 ```
 
 | Scenario | Without Abstraction | With Our Architecture |
@@ -1471,49 +1563,367 @@ def generate_asset_id(platform_id: str, platform_refs: dict) -> str:
 | Add new B2B platform | Schema migration | Just new platform_id |
 | Query across platforms | Platform-specific logic | Unified by asset_id |
 | DDH uses compound keys | Complex joins | Single deterministic hash |
+| New semantic version | New entity | New AssetVersion under same asset |
 
 New B2B platforms are added without code changes -- just a new row in the platform registry.
 
-### 13.3 Semantic Versioning vs Revision Tracking
+### 13.3 Business Domain Model
 
-These are two distinct concepts with different owners:
+**Status**: DESIGN COMPLETE (09 FEB 2026) -- not yet implemented.
 
-| Concept | Owner | Purpose | Scope |
-|---------|-------|---------|-------|
-| **Semantic Version** | B2B App | Content lineage | Their domain |
-| **Revision** | Our Platform | Operational rollback | Our domain |
+The business domain sits above the execution domain (Job → Node → Task → Result). It answers: "what are we processing, who asked for it, is it approved, and where is it served?"
 
-**Semantic versioning is explicitly the domain of the B2B application.** When DDH says "World Bank Boundaries v5", that is their semantic version indicating content changes. We store this in `platform_refs.version_id` for traceability but do NOT manage, increment, validate, or make decisions based on it.
-
-Our `revision` field tracks operational state for the same B2B semantic version:
+#### 13.3.1 Entity Overview
 
 ```
-DDH version_id: "2025-01" (their v5)
+GeospatialAsset (Aggregate Root)
 │
-├── revision 1: Initial processing
-├── revision 2: Reprocessed after worker bug fix
-├── revision 3: Reprocessed with updated COG parameters
-└── revision 4: Current (after rollback from revision 3)
+├── asset_id              hash(platform_id + dataset + resource)  ← NO version
+├── platform_id           "ddh"
+├── platform_refs         {"dataset_id": "birds2023", "resource_id": "viewer"}
+│
+├── clearance_state       uncleared | ouo | public          ← ASSET-LEVEL (all versions)
+├── clearance audit       cleared_at, cleared_by, made_public_at, made_public_by
+│
+├── latest_approved_version_ordinal    → highest approved ordinal
+│
+├── soft delete           deleted_at, deleted_by
+├── timestamps            created_at, updated_at
+│
+└──◄ AssetVersion (1:N, ordered by version_ordinal)
+      │
+      ├── asset_id + version_ordinal     composite PK
+      ├── version_label                  B2B's name: "V1", "2025-Q1", "Version Purple"
+      ├── version_ordinal                our ordering: 0, 1, 2, 3... (auto-incremented)
+      │
+      ├── approval_state                 pending_review | approved | rejected  ← VERSION-LEVEL
+      ├── reviewer, reviewed_at, rejection_reason
+      │
+      ├── processing_state               queued | processing | completed | failed
+      ├── current_job_id                 → dagapp.dag_jobs
+      ├── content_hash                   SHA256 of source file
+      │
+      ├── revision                       1, 2, 3... (reprocessing counter)
+      │
+      ├── service outputs                table_name, blob_path, stac_item_id, stac_collection_id
+      └── timestamps                     created_at, updated_at
+
+Platform (Registry)
+│
+├── platform_id           "ddh", "arcgis", "geonode"
+├── display_name          "Data Distribution Hub"
+├── required_refs         ["dataset_id", "resource_id"]
+├── optional_refs         []
+└── is_active             true
 ```
 
-**Invariant**: For any GeospatialAsset, `platform_refs` and `asset_id` stay CONSTANT across revisions. Only revision number increments.
+#### 13.3.2 State Ownership
 
-### 13.4 GeospatialAsset Integration
+States are split between asset and version:
 
-The orchestrator interacts with `GeospatialAsset` records (from `rmhgeoapi`) following strict field ownership:
+| State | Lives On | Rationale |
+|-------|----------|-----------|
+| **Clearance** (uncleared/ouo/public) | **GeospatialAsset** | Security classification applies to the dataset as a whole -- all versions share the same access level |
+| **Approval** (pending_review/approved/rejected) | **AssetVersion** | Each version is independently reviewed -- v2 doesn't invalidate v1's approval |
+| **Processing** (queued/processing/completed/failed) | **AssetVersion** | Each version has its own ETL pipeline |
+| **Revision** (1, 2, 3...) | **AssetVersion** | Reprocessing is per-version |
 
-| Concern | Platform (rmhgeoapi) | Orchestrator (rmhdagmaster) |
-|---------|----------------------|----------------------------|
-| Entity Creation | Creates asset | Never creates |
-| Entity Deletion | Soft-deletes | Never deletes |
-| Approval State | Updates | Never touches |
-| Processing Status | Never touches | Updates |
-| Content Hash | Never touches | Updates |
-| Job Linkage | Never touches | Updates current_job_id |
+Clearance gates all versions: if `clearance=ouo`, no version's service URLs are exposed externally, regardless of individual approval states.
 
-**The boundary**: Platform manages **business state**. Orchestrator manages **execution state**.
+#### 13.3.3 Semantic Version vs Revision
 
-### 13.5 Callback Architecture
+Two distinct concepts, two different owners:
+
+| Concept | Owner | What It Means | Scope |
+|---------|-------|---------------|-------|
+| **Semantic Version** | B2B App | "Here's new data" -- content update | AssetVersion (new child record) |
+| **Revision** | Our Platform | "We reprocessed the same data" -- operational retry | Revision counter within AssetVersion |
+
+```
+GeospatialAsset "abc123" (DDH birds2023/viewer)
+│
+├── AssetVersion ordinal=0, label="V1" (approved, revision 3)
+│     ├── revision 1: Initial processing
+│     ├── revision 2: Reprocessed after worker bug fix
+│     └── revision 3: Current (updated COG parameters)
+│
+└── AssetVersion ordinal=1, label="V2" (pending_review, revision 1)
+      └── revision 1: Initial processing
+```
+
+**Version labels are opaque strings.** We never parse, validate, or make decisions based on them. "V1", "2025-Q1", "Version Purple" -- all valid. The `version_ordinal` (auto-incremented integer) is what drives ordering, `version=latest` resolution, and submission enforcement.
+
+#### 13.3.4 Version Ordering Constraint
+
+**Versions must be approved (or deleted) in order.** B2B app teams have curation responsibility.
+
+Valid states:
+
+```
+v0: approved   v1: approved   v2: pending     ← normal progression
+v0: approved   v1: pending                    ← v1 under review
+v0: pending                                   ← first submission
+```
+
+Invalid -- **rejected at `platform/submit`**:
+
+```
+v0: pending    v1: submitted                  ← REJECTED: resolve v0 first
+v0: rejected   v1: submitted                  ← REJECTED: approve or delete v0
+v0: approved   v1: rejected   v2: submitted   ← REJECTED: resolve v1
+```
+
+Enforcement at `platform/submit`: if the asset has any version in `pending_review` or `rejected` state, the submission is bounced. "Version N is unresolved. Approve, delete, or resubmit before adding a new version."
+
+If a version is rejected and deleted, the next submission gets the next ordinal. The ordinal sequence may have gaps -- that's fine. `version=latest` resolves to the highest ordinal with `approval_state = approved`, not the highest ordinal overall.
+
+#### 13.3.5 Service URL Routing
+
+Service URLs route through the asset, versioned by ordinal:
+
+```
+/tiles/{asset_id}?version=latest   → highest approved ordinal → blob_path/table_name
+/tiles/{asset_id}?version=0        → ordinal 0 → blob_path/table_name (if approved)
+/tiles/{asset_id}?version=1        → ordinal 1 → blob_path/table_name (if approved)
+```
+
+URL exposure is configurable per-asset:
+
+| Mode | Behavior |
+|------|----------|
+| **latest-only** (default) | Only `version=latest` is exposed. Historical versions exist in the database but have no live service URLs. |
+| **all-versions** | `version=latest` plus `version=N` for each approved version. Used when B2B apps need access to historical data. |
+
+`version=latest` updates automatically when a new version is approved. Existing versioned URLs are unaffected -- approving v2 does not change what `version=0` serves.
+
+#### 13.3.6 Lifecycle Workflow
+
+```
+┌────────────────────────────────────────────────────────────────────────────┐
+│                              ASSET LIFECYCLE                                │
+├────────────────────────────────────────────────────────────────────────────┤
+│                                                                            │
+│  POST /platform/submit (new dataset+resource)                              │
+│       │                                                                    │
+│       ▼                                                                    │
+│  ┌──────────────────────────────────┐                                      │
+│  │ GeospatialAsset CREATED          │                                      │
+│  │ clearance: uncleared             │                                      │
+│  │                                  │                                      │
+│  │ AssetVersion ordinal=0           │                                      │
+│  │   label: "V1" (from B2B)        │                                      │
+│  │   approval: pending_review       │                                      │
+│  │   processing: queued             │                                      │
+│  └──────────────────┬───────────────┘                                      │
+│                     │                                                      │
+│              DAG job runs ETL                                               │
+│                     │                                                      │
+│                     ▼                                                      │
+│  ┌──────────────────────────────────┐                                      │
+│  │ AssetVersion ordinal=0           │                                      │
+│  │   processing: completed          │                                      │
+│  │   approval: pending_review       │  ◄── preview URLs + approval UI      │
+│  └──────────────────┬───────────────┘                                      │
+│                     │                                                      │
+│        ┌────────────┼────────────┐                                         │
+│        ▼            ▼            ▼                                         │
+│   POST /approve  POST /reject  POST /unpublish                             │
+│   (clearance     (reason)      (soft delete)                               │
+│    required)                                                               │
+│        │            │                                                      │
+│        ▼            ▼                                                      │
+│   ┌──────────┐ ┌──────────┐                                               │
+│   │ approved │ │ rejected │                                               │
+│   │          │ │          │                                               │
+│   │ version= │ │ must     │                                               │
+│   │ latest   │ │ resolve  │                                               │
+│   │ → v0     │ │ before   │                                               │
+│   └──────────┘ │ next     │                                               │
+│                │ submit   │                                               │
+│                └──────────┘                                               │
+│                                                                            │
+│  POST /platform/submit (new version, same dataset+resource)                │
+│       │  ← BLOCKED if any version is pending/rejected                      │
+│       ▼                                                                    │
+│  ┌──────────────────────────────────┐                                      │
+│  │ AssetVersion ordinal=1 ADDED     │                                      │
+│  │   label: "V2" (from B2B)        │                                      │
+│  │   approval: pending_review       │                                      │
+│  │   processing: queued             │                                      │
+│  │                                  │                                      │
+│  │ v0 still approved + serving      │  ◄── version=latest still → v0      │
+│  └──────────────────────────────────┘                                      │
+│                                                                            │
+│  After v1 approved:                                                        │
+│    version=latest → v1 (updated automatically)                             │
+│    version=0 → v0 (unchanged, if all-versions mode)                        │
+│                                                                            │
+└────────────────────────────────────────────────────────────────────────────┘
+```
+
+### 13.4 Platform Registry
+
+B2B platforms are registered entities with declared identifier requirements:
+
+```python
+class Platform(BaseModel):
+    platform_id: str          # "ddh", "arcgis", "geonode"
+    display_name: str         # "Data Distribution Hub"
+    required_refs: List[str]  # ["dataset_id", "resource_id"]
+    optional_refs: List[str]  # []
+    is_active: bool           # true
+```
+
+On submission, `platform_refs` is validated against the platform's `required_refs`. The `platform_refs` JSONB column has a GIN index for efficient containment queries:
+
+```sql
+-- All assets for a DDH dataset (any resource)
+SELECT * FROM dagapp.geospatial_assets
+WHERE platform_id = 'ddh'
+  AND platform_refs @> '{"dataset_id": "IDN_lulc"}'
+  AND deleted_at IS NULL;
+```
+
+### 13.5 Field Ownership
+
+| Concern | Gateway / Platform API | Orchestrator |
+|---------|------------------------|--------------|
+| Asset creation | Creates GeospatialAsset | Never creates |
+| Asset deletion | Soft-deletes | Never deletes |
+| Version creation | Creates AssetVersion on submit | Never creates |
+| Approval state | Updates on approve/reject | Never touches |
+| Clearance state | Updates on approve | Never touches |
+| Processing state | Never touches | Updates (queued → processing → completed/failed) |
+| Content hash | Never touches | Updates on job completion |
+| Job linkage | Never touches | Updates current_job_id on AssetVersion |
+| Service outputs | Never touches | Updates table_name, blob_path, stac IDs on completion |
+
+**The boundary**: Gateway manages **business state** (approval, clearance, identity). Orchestrator manages **execution state** (processing, job linkage, service outputs).
+
+### 13.6 Service Artifacts & Multi-Workflow Lifecycle
+
+#### 13.6.1 The Problem
+
+A single AssetVersion may go through **multiple DAG workflows at different lifecycle stages**. The initial ETL workflow runs on submission. But approval with `clearance=public` triggers a second workflow (ADF export) that produces additional artifacts. The entity model must accommodate this.
+
+#### 13.6.2 Workflow Stages Per AssetVersion
+
+```
+AssetVersion ordinal=0, label="V1"
+│
+├── Stage 1: ETL Workflow (triggered by platform/submit)
+│     │
+│     ├── DAG Job: "raster_ingest"
+│     └── Produces: blob_path, table_name, stac_item_id
+│           These exist immediately after processing completes.
+│           Internal preview URLs work. TiTiler/TiPG can serve internally.
+│           Approval UI shows preview.
+│
+├── Stage 2: Approval (gateway, no DAG job needed)
+│     │
+│     ├── POST /platform/approve (clearance_level=ouo)
+│     │     └── Done. Internal URLs ARE the production URLs.
+│     │         No additional workflow needed.
+│     │
+│     └── POST /platform/approve (clearance_level=public)
+│           └── Gateway queues Stage 3...
+│
+└── Stage 3: ADF Export Workflow (triggered by public clearance)
+      │
+      ├── DAG Job: "adf_export"
+      │     input_params: { asset_id, version_ordinal, blob_path }
+      └── Produces: external zone artifacts, adf_run_id
+            External-facing URLs now exist.
+```
+
+Key insight: **approval does not create artifacts -- it gates access to them.** The internal artifacts exist from the moment ETL completes. Approval flips a state that the routing layer checks. Only public clearance triggers additional work (ADF export), and that's modeled as "gateway queues another DAG job."
+
+For OUO: submit → ETL → approve → done (two steps, one DAG job).
+For Public: submit → ETL → approve → ADF export → done (three steps, two DAG jobs).
+
+#### 13.6.3 Where Service Artifacts Live
+
+The ETL workflow produces service outputs (blob_path, table_name, stac_item_id). The ADF workflow produces external zone outputs. Two options for modeling this:
+
+**Option A: Flat fields on AssetVersion (simpler)**
+
+```
+AssetVersion
+  │
+  │  ── ETL outputs (written by ETL DAG job) ──
+  ├── blob_path              "bronze/processed/birds.tif"
+  ├── table_name             "geo.birds_2023"
+  ├── stac_item_id           "birds-2023-v1"
+  ├── stac_collection_id     "birds"
+  │
+  │  ── ADF outputs (written by ADF DAG job, NULL until public) ──
+  ├── external_blob_path     NULL → "external/birds.tif"
+  ├── adf_run_id             NULL → "run-xyz"
+  │
+  └── current_job_id         most recent active DAG job
+```
+
+Pros:
+- Simple schema, no joins for service URL resolution
+- `SELECT blob_path FROM asset_versions WHERE asset_id = X AND version_ordinal = Y`
+- Works if artifact topology is always the same (one internal set, optionally one external set)
+
+Cons:
+- Adding new output types means schema migration (new columns)
+- Doesn't scale if a version can have multiple export targets
+
+**Option B: Child entity for service artifacts (more flexible)**
+
+```
+AssetVersion
+  └──◄ ServiceArtifact (1:N)
+        ├── artifact_id       UUID
+        ├── artifact_type     "internal" | "external"
+        ├── blob_path         where the data lives
+        ├── table_name        PostGIS table (if vector)
+        ├── stac_item_id      STAC entry
+        ├── stac_collection_id
+        ├── created_by_job    which DAG job produced this
+        ├── zone              "internal" | "external"
+        └── active            bool
+```
+
+Pros:
+- Handles arbitrary output topology (multiple export targets, multiple formats)
+- Each artifact traces back to its producing DAG job
+- New artifact types are rows, not schema migrations
+
+Cons:
+- Adds a join to every service URL resolution
+- More complex queries for the common case
+
+**Current recommendation**: Start with Option A. The internal/external split is predictable -- every asset has at most one internal set and optionally one external set. If the topology grows more complex later (multiple export targets, multiple formats per version), introduce the child entity then. Premature abstraction costs more than a future migration.
+
+#### 13.6.4 Gateway-Orchestrator Relay Pattern
+
+The gateway and orchestrator hand off responsibility cleanly at each lifecycle stage:
+
+```
+Stage 1 (Submit):
+  Gateway:       Creates AssetVersion (processing_state=queued)
+                 Queues DAG job "raster_ingest"
+  Orchestrator:  Runs ETL → writes blob_path, table_name, stac IDs
+                 Sets processing_state=completed
+
+Stage 2 (Approve):
+  Gateway:       Sets approval_state=approved, clearance_state=ouo|public
+                 If public: queues DAG job "adf_export"
+
+Stage 3 (ADF Export, if public):
+  Orchestrator:  Runs ADF workflow → writes external_blob_path, adf_run_id
+  Gateway:       External URLs now resolvable
+```
+
+The orchestrator never makes business decisions (approve, set clearance). The gateway never does heavy compute (ETL, ADF export). When the gateway needs work done, it queues a DAG job. When the orchestrator finishes, the gateway takes over for the next business decision.
+
+If future workflows are needed (e.g., ADF reversal for public→ouo downgrade, STAC re-registration), the same pattern applies: gateway makes the business decision, queues the work, orchestrator executes it. All jobs trace back to the same AssetVersion via `asset_id + version_ordinal`.
+
+### 13.7 Callback Architecture
 
 When a job completes, the orchestrator can notify the original caller:
 
@@ -1541,7 +1951,7 @@ POST to callback   │
          Done
 ```
 
-### 13.6 STAC Traceability
+### 13.8 STAC Traceability
 
 STAC items store B2B identifiers in namespaced properties for traceability:
 
@@ -1627,8 +2037,8 @@ The `/api/ops/*` endpoints are for development debugging only and will be remove
 | Resource | Name | Purpose |
 |----------|------|---------|
 | **ACR** | `rmhazureacr.azurecr.io` | Container registry |
-| **Orchestrator Image** | `rmhdagmaster:v0.2.x` | Lightweight orchestrator |
-| **Worker Image** | `rmhdagworker:v0.2.x` | Heavy GDAL worker |
+| **Orchestrator Image** | `rmhdagmaster:v0.12.x` | Lightweight orchestrator |
+| **Worker Image** | `rmhdagworker:v0.12.x` | Heavy GDAL worker |
 | **Web App** | `rmhdagmaster` | Orchestrator + API + UI |
 | **Web App** | `rmhdagworker` | Heavy worker (GDAL tasks) |
 | **PostgreSQL** | `rmhpostgres.postgres.database.azure.com` | Shared database |
@@ -1681,26 +2091,33 @@ The `/api/ops/*` endpoints are for development debugging only and will be remove
 
 ```bash
 # Build orchestrator (lightweight ~250MB)
+# IMPORTANT: --platform linux/amd64 is required — without it, entrypoint.sh
+# gets "exec format error" on App Service
 az acr build --registry rmhazureacr \
-  --image rmhdagmaster:v0.2.0.0 \
+  --platform linux/amd64 \
+  --image rmhdagmaster:v0.12.0 \
   -f Dockerfile .
 
 # Build worker (heavy ~2-3GB with GDAL)
 az acr build --registry rmhazureacr \
-  --image rmhdagworker:v0.2.0.0 \
+  --platform linux/amd64 \
+  --image rmhdagworker:v0.12.0 \
   -f Dockerfile.worker .
 
-# Deploy to Web Apps
+# Deploy to Web Apps (must set container image explicitly — restart alone
+# doesn't pull new images if the tag is unchanged in config)
 az webapp config container set --name rmhdagmaster --resource-group rmhazure_rg \
-  --container-image-name rmhazureacr.azurecr.io/rmhdagmaster:v0.2.0.0
+  --container-image-name rmhazureacr.azurecr.io/rmhdagmaster:v0.12.0
 
 az webapp config container set --name rmhdagworker --resource-group rmhazure_rg \
-  --container-image-name rmhazureacr.azurecr.io/rmhdagworker:v0.2.0.0
+  --container-image-name rmhazureacr.azurecr.io/rmhdagworker:v0.12.0
 
 # Restart to pick up new images
 az webapp restart --name rmhdagmaster --resource-group rmhazure_rg
 az webapp restart --name rmhdagworker --resource-group rmhazure_rg
 ```
+
+A convenience deploy script at `scripts/deploy.sh` handles ACR build, container config update, restart, and health check in one command.
 
 ### 15.4 Environment Variables
 
@@ -1726,6 +2143,7 @@ az webapp restart --name rmhdagworker --resource-group rmhazure_rg
 | `WORKER_TYPE` | `docker` | Worker type |
 | `WORKER_QUEUE` | `container-tasks` | Queue to consume from |
 | `DAG_CALLBACK_URL` | `https://rmhdagmaster-.../api/v1/callbacks/task-result` | Result reporting URL |
+| `AZURE_STORAGE_ACCOUNT_NAME` | `rmhazuregeo` | Storage account for blob SAS delegation |
 
 ### 15.5 Connection Details
 
@@ -1752,11 +2170,13 @@ Queues:
 ```
 Registry:   rmhazureacr.azurecr.io
 Images:
-  - rmhdagmaster:v0.2.x  (orchestrator)
-  - rmhdagworker:v0.2.x  (worker)
+  - rmhdagmaster:v0.12.x  (orchestrator)
+  - rmhdagworker:v0.12.x  (worker)
 ```
 
 ### 15.6 RBAC Requirements
+
+**Orchestrator Identity (`rmhpgflexadmin` UMI)**:
 
 | Identity | Resource | Role |
 |----------|----------|------|
@@ -1764,6 +2184,15 @@ Images:
 | `rmhpgflexadmin` | Storage `rmhazuregeo` | Storage Blob Data Contributor |
 | `rmhpgflexadmin` | Storage `rmhstorage123` | Storage Blob Data Contributor |
 | `rmhpgflexadmin` | PostgreSQL `rmhpostgres` | Entra ID principal with dagapp schema privileges |
+
+**Worker Identity (system-assigned managed identity)**:
+
+| Identity | Resource | Role | Purpose |
+|----------|----------|------|---------|
+| Worker MI | Storage `rmhazuregeo` | Storage Blob Data Reader | Read blob content via SAS delegation |
+| Worker MI | Storage `rmhazuregeo` | Storage Blob Delegator | Generate user delegation SAS tokens |
+
+**Azure RBAC Note**: Management plane roles (Contributor, Owner) do NOT include data plane access (Storage Blob Data Reader, Storage Blob Delegator). These must be explicitly assigned. See [Azure data plane vs management plane](https://learn.microsoft.com/en-us/azure/role-based-access-control/role-definitions#data-actions).
 
 ### 15.7 Deployment Topology
 
@@ -1780,8 +2209,8 @@ Images:
                     ┌──────────────┴──────────────┐
                     │    Azure Container Registry │
                     │    rmhazureacr.azurecr.io   │
-                    │    ├── rmhdagmaster:v0.2.x  │
-                    │    └── rmhdagworker:v0.2.x  │
+                    │    ├── rmhdagmaster:v0.12.x  │
+                    │    └── rmhdagworker:v0.12.x  │
                     └──────────────┬──────────────┘
                                    │
                     ┌──────────────┴──────────────┐
@@ -1835,15 +2264,19 @@ Phase 4: Legacy Removed
 ## Key Invariants
 
 1. **Never use B2B identifiers as primary keys** -- External IDs are metadata in `platform_refs` JSONB.
-2. **Revision is not Semantic Version** -- We own revision (operational), they own version (content).
-3. **platform_refs is immutable** for a given asset_id.
-4. **DAG model is independent** of B2B data models.
-5. **All data through Pydantic** before touching the database.
-6. **Repository pattern** for all database access -- no raw SQL outside repositories.
-7. **dict_row factory** for all database queries -- no tuple indexing.
-8. **Owner-scoped queries** -- Each orchestrator only touches its own jobs.
-9. **Heartbeat maintains ownership** -- Stale heartbeats trigger orphan recovery.
-10. **Every state transition is logged** -- JobEvents provide full audit trail.
+2. **asset_id excludes version** -- `hash(platform_id + identity refs)`. Semantic versions are children of the asset.
+3. **Revision is not Semantic Version** -- We own revision (operational reprocessing), B2B owns version (content update).
+4. **Version labels are opaque** -- We never parse or validate them. The auto-incremented `version_ordinal` drives all ordering.
+5. **Versions must be resolved in order** -- Cannot submit version N+1 while version N is pending or rejected.
+6. **Clearance is asset-level** -- All versions share one clearance state. Approval is per-version.
+7. **platform_refs is immutable** for a given asset_id.
+8. **DAG model is independent** of B2B data models.
+9. **All data through Pydantic** before touching the database.
+10. **Repository pattern** for all database access -- no raw SQL outside repositories.
+11. **dict_row factory** for all database queries -- no tuple indexing.
+12. **Owner-scoped queries** -- Each orchestrator only touches its own jobs.
+13. **Heartbeat maintains ownership** -- Stale heartbeats trigger orphan recovery.
+14. **Every state transition is logged** -- JobEvents provide full audit trail.
 
 ---
 

@@ -16,7 +16,7 @@ import logging
 from datetime import datetime
 from typing import List, Optional, Dict, Any
 
-from psycopg import AsyncConnection
+from psycopg import AsyncConnection, sql
 from psycopg.rows import dict_row
 from psycopg.types.json import Json
 from psycopg_pool import AsyncConnectionPool
@@ -46,8 +46,8 @@ class JobRepository:
         """
         async with self.pool.connection() as conn:
             await conn.execute(
-                f"""
-                INSERT INTO {TABLE_JOBS} (
+                sql.SQL("""
+                INSERT INTO {} (
                     job_id, workflow_id, status, input_params, result_data,
                     error_message, created_at, started_at,
                     completed_at, submitted_by, correlation_id, version,
@@ -59,7 +59,7 @@ class JobRepository:
                     %(submitted_by)s, %(correlation_id)s, %(version)s,
                     %(owner_id)s, %(owner_heartbeat_at)s
                 )
-                """,
+                """).format(TABLE_JOBS),
                 {
                     "job_id": job.job_id,
                     "workflow_id": job.workflow_id,
@@ -93,7 +93,7 @@ class JobRepository:
         async with self.pool.connection() as conn:
             conn.row_factory = dict_row
             result = await conn.execute(
-                f"SELECT * FROM {TABLE_JOBS} WHERE job_id = %s",
+                sql.SQL("SELECT * FROM {} WHERE job_id = %s").format(TABLE_JOBS),
                 (job_id,),
             )
             row = await result.fetchone()
@@ -121,8 +121,8 @@ class JobRepository:
 
         async with self.pool.connection() as conn:
             result = await conn.execute(
-                f"""
-                UPDATE {TABLE_JOBS} SET
+                sql.SQL("""
+                UPDATE {} SET
                     status = %(status)s,
                     result_data = %(result_data)s,
                     error_message = %(error_message)s,
@@ -135,7 +135,7 @@ class JobRepository:
                     version = version + 1
                 WHERE job_id = %(job_id)s
                   AND version = %(version)s
-                """,
+                """).format(TABLE_JOBS),
                 {
                     "job_id": job.job_id,
                     "status": job.status.value,
@@ -196,23 +196,23 @@ class JobRepository:
                 # For RUNNING transition, also check started_at IS NULL
                 if expected_version is not None:
                     result = await conn.execute(
-                        f"""
-                        UPDATE {TABLE_JOBS}
+                        sql.SQL("""
+                        UPDATE {}
                         SET status = %s, updated_at = %s, started_at = %s,
                             version = version + 1
                         WHERE job_id = %s AND started_at IS NULL
                           AND version = %s
-                        """,
+                        """).format(TABLE_JOBS),
                         (status.value, now, now, job_id, expected_version),
                     )
                 else:
                     result = await conn.execute(
-                        f"""
-                        UPDATE {TABLE_JOBS}
+                        sql.SQL("""
+                        UPDATE {}
                         SET status = %s, updated_at = %s, started_at = %s,
                             version = version + 1
                         WHERE job_id = %s AND started_at IS NULL
-                        """,
+                        """).format(TABLE_JOBS),
                         (status.value, now, now, job_id),
                     )
             else:
@@ -220,25 +220,25 @@ class JobRepository:
                 result_json = Json(result_data) if result_data else None
                 if expected_version is not None:
                     result = await conn.execute(
-                        f"""
-                        UPDATE {TABLE_JOBS}
+                        sql.SQL("""
+                        UPDATE {}
                         SET status = %s, updated_at = %s, completed_at = %s,
                             error_message = %s, result_data = %s,
                             version = version + 1
                         WHERE job_id = %s AND version = %s
-                        """,
+                        """).format(TABLE_JOBS),
                         (status.value, now, completed_at, error_message,
                          result_json, job_id, expected_version),
                     )
                 else:
                     result = await conn.execute(
-                        f"""
-                        UPDATE {TABLE_JOBS}
+                        sql.SQL("""
+                        UPDATE {}
                         SET status = %s, updated_at = %s, completed_at = %s,
                             error_message = %s, result_data = %s,
                             version = version + 1
                         WHERE job_id = %s
-                        """,
+                        """).format(TABLE_JOBS),
                         (status.value, now, completed_at, error_message,
                          result_json, job_id),
                     )
@@ -269,12 +269,12 @@ class JobRepository:
         async with self.pool.connection() as conn:
             conn.row_factory = dict_row
             result = await conn.execute(
-                f"""
-                SELECT * FROM {TABLE_JOBS}
+                sql.SQL("""
+                SELECT * FROM {}
                 WHERE status = %s
                 ORDER BY created_at DESC
                 LIMIT %s
-                """,
+                """).format(TABLE_JOBS),
                 (status.value, limit),
             )
             rows = await result.fetchall()
@@ -293,12 +293,12 @@ class JobRepository:
         async with self.pool.connection() as conn:
             conn.row_factory = dict_row
             result = await conn.execute(
-                f"""
-                SELECT * FROM {TABLE_JOBS}
+                sql.SQL("""
+                SELECT * FROM {}
                 WHERE status IN ('pending', 'running')
                 ORDER BY created_at ASC
                 LIMIT %s
-                """,
+                """).format(TABLE_JOBS),
                 (limit,),
             )
             rows = await result.fetchall()
@@ -309,7 +309,7 @@ class JobRepository:
         async with self.pool.connection() as conn:
             conn.row_factory = dict_row
             result = await conn.execute(
-                f"SELECT 1 as exists FROM {TABLE_JOBS} WHERE job_id = %s",
+                sql.SQL("SELECT 1 as exists FROM {} WHERE job_id = %s").format(TABLE_JOBS),
                 (job_id,),
             )
             return await result.fetchone() is not None
@@ -327,11 +327,11 @@ class JobRepository:
         async with self.pool.connection() as conn:
             conn.row_factory = dict_row
             result = await conn.execute(
-                f"""
-                SELECT * FROM {TABLE_JOBS}
+                sql.SQL("""
+                SELECT * FROM {}
                 ORDER BY created_at DESC
                 LIMIT %s
-                """,
+                """).format(TABLE_JOBS),
                 (limit,),
             )
             rows = await result.fetchall()
@@ -386,8 +386,8 @@ class JobRepository:
 
         async with self.pool.connection() as conn:
             await conn.execute(
-                f"""
-                INSERT INTO {TABLE_JOBS} (
+                sql.SQL("""
+                INSERT INTO {} (
                     job_id, workflow_id, status, input_params, result_data,
                     error_message, created_at, started_at,
                     completed_at, submitted_by, correlation_id, version,
@@ -399,7 +399,7 @@ class JobRepository:
                     %(submitted_by)s, %(correlation_id)s, %(version)s,
                     %(owner_id)s, %(owner_heartbeat_at)s
                 )
-                """,
+                """).format(TABLE_JOBS),
                 {
                     "job_id": job.job_id,
                     "workflow_id": job.workflow_id,
@@ -444,13 +444,13 @@ class JobRepository:
         async with self.pool.connection() as conn:
             conn.row_factory = dict_row
             result = await conn.execute(
-                f"""
-                SELECT * FROM {TABLE_JOBS}
+                sql.SQL("""
+                SELECT * FROM {}
                 WHERE owner_id = %s
                   AND status IN ('pending', 'running')
                 ORDER BY created_at ASC
                 LIMIT %s
-                """,
+                """).format(TABLE_JOBS),
                 (owner_id, limit),
             )
             rows = await result.fetchall()
@@ -471,12 +471,12 @@ class JobRepository:
         """
         async with self.pool.connection() as conn:
             result = await conn.execute(
-                f"""
-                UPDATE {TABLE_JOBS}
+                sql.SQL("""
+                UPDATE {}
                 SET owner_heartbeat_at = NOW()
                 WHERE owner_id = %s
                   AND status IN ('pending', 'running')
-                """,
+                """).format(TABLE_JOBS),
                 (owner_id,),
             )
             count = result.rowcount
@@ -515,9 +515,9 @@ class JobRepository:
             conn.row_factory = dict_row
             # Use CTE with FOR UPDATE SKIP LOCKED for safe concurrent reclaim
             result = await conn.execute(
-                f"""
+                sql.SQL("""
                 WITH orphans AS (
-                    SELECT job_id FROM {TABLE_JOBS}
+                    SELECT job_id FROM {}
                     WHERE status IN ('pending', 'running')
                       AND (
                           owner_id IS NULL
@@ -526,12 +526,12 @@ class JobRepository:
                     LIMIT %s
                     FOR UPDATE SKIP LOCKED
                 )
-                UPDATE {TABLE_JOBS}
+                UPDATE {}
                 SET owner_id = %s,
                     owner_heartbeat_at = NOW()
                 WHERE job_id IN (SELECT job_id FROM orphans)
                 RETURNING job_id
-                """,
+                """).format(TABLE_JOBS, TABLE_JOBS),
                 (orphan_threshold_seconds, limit, new_owner_id),
             )
             rows = await result.fetchall()
@@ -569,11 +569,11 @@ class JobRepository:
             conn.row_factory = dict_row
             # Check metadata->idempotency_key
             result = await conn.execute(
-                f"""
-                SELECT * FROM {TABLE_JOBS}
+                sql.SQL("""
+                SELECT * FROM {}
                 WHERE metadata->>'idempotency_key' = %s
                 LIMIT 1
-                """,
+                """).format(TABLE_JOBS),
                 (idempotency_key,),
             )
             row = await result.fetchone()
@@ -599,13 +599,13 @@ class JobRepository:
         """
         async with self.pool.connection() as conn:
             result = await conn.execute(
-                f"""
-                UPDATE {TABLE_JOBS}
+                sql.SQL("""
+                UPDATE {}
                 SET owner_id = NULL,
                     owner_heartbeat_at = NULL
                 WHERE job_id = %s
                   AND owner_id = %s
-                """,
+                """).format(TABLE_JOBS),
                 (job_id, owner_id),
             )
             released = result.rowcount > 0
@@ -628,13 +628,13 @@ class JobRepository:
         async with self.pool.connection() as conn:
             conn.row_factory = dict_row
             result = await conn.execute(
-                f"""
+                sql.SQL("""
                 SELECT owner_id, COUNT(*) as count
-                FROM {TABLE_JOBS}
+                FROM {}
                 WHERE status IN ('pending', 'running')
                   AND owner_id IS NOT NULL
                 GROUP BY owner_id
-                """,
+                """).format(TABLE_JOBS),
             )
             rows = await result.fetchall()
             return {row["owner_id"]: row["count"] for row in rows}

@@ -16,6 +16,7 @@ Events provide an audit trail and debugging timeline.
 import logging
 from typing import List, Optional
 
+from psycopg import sql
 from psycopg.rows import dict_row
 from psycopg.types.json import Json
 from psycopg_pool import AsyncConnectionPool
@@ -46,8 +47,8 @@ class EventRepository:
         async with self.pool.connection() as conn:
             conn.row_factory = dict_row
             result = await conn.execute(
-                f"""
-                INSERT INTO {TABLE_EVENTS} (
+                sql.SQL("""
+                INSERT INTO {} (
                     job_id, node_id, task_id, event_type, event_status,
                     checkpoint_name, event_data, error_message, duration_ms,
                     created_at, source_app
@@ -58,7 +59,7 @@ class EventRepository:
                     %(source_app)s
                 )
                 RETURNING event_id
-                """,
+                """).format(TABLE_EVENTS),
                 {
                     "job_id": event.job_id,
                     "node_id": event.node_id,
@@ -100,22 +101,22 @@ class EventRepository:
             if event_types:
                 type_values = [t.value for t in event_types]
                 result = await conn.execute(
-                    f"""
-                    SELECT * FROM {TABLE_EVENTS}
+                    sql.SQL("""
+                    SELECT * FROM {}
                     WHERE job_id = %s AND event_type = ANY(%s)
                     ORDER BY created_at DESC
                     LIMIT %s
-                    """,
+                    """).format(TABLE_EVENTS),
                     (job_id, type_values, limit),
                 )
             else:
                 result = await conn.execute(
-                    f"""
-                    SELECT * FROM {TABLE_EVENTS}
+                    sql.SQL("""
+                    SELECT * FROM {}
                     WHERE job_id = %s
                     ORDER BY created_at DESC
                     LIMIT %s
-                    """,
+                    """).format(TABLE_EVENTS),
                     (job_id, limit),
                 )
 
@@ -142,12 +143,12 @@ class EventRepository:
         async with self.pool.connection() as conn:
             conn.row_factory = dict_row
             result = await conn.execute(
-                f"""
-                SELECT * FROM {TABLE_EVENTS}
+                sql.SQL("""
+                SELECT * FROM {}
                 WHERE job_id = %s AND node_id = %s
                 ORDER BY created_at DESC
                 LIMIT %s
-                """,
+                """).format(TABLE_EVENTS),
                 (job_id, node_id, limit),
             )
             rows = await result.fetchall()
@@ -171,12 +172,12 @@ class EventRepository:
         async with self.pool.connection() as conn:
             conn.row_factory = dict_row
             result = await conn.execute(
-                f"""
-                SELECT * FROM {TABLE_EVENTS}
+                sql.SQL("""
+                SELECT * FROM {}
                 WHERE job_id = %s
                 ORDER BY created_at ASC
                 LIMIT %s
-                """,
+                """).format(TABLE_EVENTS),
                 (job_id, limit),
             )
             rows = await result.fetchall()

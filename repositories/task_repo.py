@@ -17,6 +17,7 @@ import logging
 from datetime import datetime
 from typing import List, Optional, Dict, Any
 
+from psycopg import sql
 from psycopg.rows import dict_row
 from psycopg.types.json import Json
 from psycopg_pool import AsyncConnectionPool
@@ -48,8 +49,8 @@ class TaskResultRepository:
         """
         async with self.pool.connection() as conn:
             await conn.execute(
-                f"""
-                INSERT INTO {TABLE_TASKS} (
+                sql.SQL("""
+                INSERT INTO {} (
                     task_id, job_id, node_id, status, output, error_message,
                     worker_id, execution_duration_ms, reported_at, processed
                 ) VALUES (
@@ -65,7 +66,7 @@ class TaskResultRepository:
                     execution_duration_ms = EXCLUDED.execution_duration_ms,
                     reported_at = EXCLUDED.reported_at,
                     processed = false
-                """,
+                """).format(TABLE_TASKS),
                 {
                     "task_id": result.task_id,
                     "job_id": result.job_id,
@@ -97,7 +98,7 @@ class TaskResultRepository:
         async with self.pool.connection() as conn:
             conn.row_factory = dict_row
             result = await conn.execute(
-                f"SELECT * FROM {TABLE_TASKS} WHERE task_id = %s",
+                sql.SQL("SELECT * FROM {} WHERE task_id = %s").format(TABLE_TASKS),
                 (task_id,),
             )
             row = await result.fetchone()
@@ -123,12 +124,12 @@ class TaskResultRepository:
         async with self.pool.connection() as conn:
             conn.row_factory = dict_row
             result = await conn.execute(
-                f"""
-                SELECT * FROM {TABLE_TASKS}
+                sql.SQL("""
+                SELECT * FROM {}
                 WHERE processed = false
                 ORDER BY reported_at ASC
                 LIMIT %s
-                """,
+                """).format(TABLE_TASKS),
                 (limit,),
             )
             rows = await result.fetchall()
@@ -147,11 +148,11 @@ class TaskResultRepository:
         async with self.pool.connection() as conn:
             conn.row_factory = dict_row
             result = await conn.execute(
-                f"""
-                SELECT * FROM {TABLE_TASKS}
+                sql.SQL("""
+                SELECT * FROM {}
                 WHERE job_id = %s AND processed = false
                 ORDER BY reported_at ASC
-                """,
+                """).format(TABLE_TASKS),
                 (job_id,),
             )
             rows = await result.fetchall()
@@ -171,11 +172,11 @@ class TaskResultRepository:
         """
         async with self.pool.connection() as conn:
             result = await conn.execute(
-                f"""
-                UPDATE {TABLE_TASKS}
+                sql.SQL("""
+                UPDATE {}
                 SET processed = true
                 WHERE task_id = %s AND processed = false
-                """,
+                """).format(TABLE_TASKS),
                 (task_id,),
             )
             return result.rowcount > 0
@@ -195,11 +196,11 @@ class TaskResultRepository:
 
         async with self.pool.connection() as conn:
             result = await conn.execute(
-                f"""
-                UPDATE {TABLE_TASKS}
+                sql.SQL("""
+                UPDATE {}
                 SET processed = true
                 WHERE task_id = ANY(%s) AND processed = false
-                """,
+                """).format(TABLE_TASKS),
                 (task_ids,),
             )
             return result.rowcount
@@ -217,11 +218,11 @@ class TaskResultRepository:
         async with self.pool.connection() as conn:
             conn.row_factory = dict_row
             result = await conn.execute(
-                f"""
-                SELECT * FROM {TABLE_TASKS}
+                sql.SQL("""
+                SELECT * FROM {}
                 WHERE job_id = %s
                 ORDER BY reported_at ASC
-                """,
+                """).format(TABLE_TASKS),
                 (job_id,),
             )
             rows = await result.fetchall()
@@ -239,11 +240,11 @@ class TaskResultRepository:
         """
         async with self.pool.connection() as conn:
             result = await conn.execute(
-                f"""
-                DELETE FROM {TABLE_TASKS}
+                sql.SQL("""
+                DELETE FROM {}
                 WHERE processed = true
                 AND reported_at < NOW() - INTERVAL '%s days'
-                """,
+                """).format(TABLE_TASKS),
                 (days,),
             )
             count = result.rowcount
