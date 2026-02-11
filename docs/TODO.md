@@ -101,17 +101,30 @@ Build the business domain layer (GeospatialAsset, AssetVersion, Platform Registr
 | 8 | **API Integration** | platform/submit, status, approve, reject, unpublish | Not started |
 | 9 | **Callback architecture** | POST results back to B2B apps on job completion | Not started |
 
-### Tier 5: Observability & Hardening
+### Tier 5: Observability & Hardening (CURRENT FOCUS)
 
-Polish and operational visibility.
+Polish, operational visibility, and production safety.
 
-| # | Item | What It Is | IMPL Ref |
-|---|------|-----------|----------|
-| 10 | **Progress API** | Real-time job/node progress | Sec 4.1 |
-| 11 | **Metrics Dashboard** | Workflow stats, failure rates | Sec 4.2 |
-| 12 | **Data Integrity** | Pydantic schemas on raw dict endpoints | Sec 5.3 |
-| 13 | **Version Pinning** | Snapshot workflow YAML at job creation | Sec 2.1 |
-| 14 | **Transaction Wrapping** | Wrap multi-step DB updates atomically | Sec 2.2 |
+| # | Item | What It Is | Status | Ref |
+|---|------|-----------|--------|-----|
+| 13 | **Version Pinning** | Pin workflow version + snapshot at job creation; provenance in outputs | In progress | `docs/VERSION_PINNING.md` |
+| 10 | **Progress API** | Real-time job/node progress | Not started | IMPL Sec 4.1 |
+| 11 | **Metrics Dashboard** | Workflow stats, failure rates | Not started | IMPL Sec 4.2 |
+| 12 | **Data Integrity** | Pydantic schemas on raw dict endpoints | Not started | IMPL Sec 5.3 |
+| 14 | **Transaction Wrapping** | Wrap multi-step DB updates atomically | Deprioritized (see below) | IMPL Sec 2.2 |
+
+**Version Pinning** (item 13) — 7 files, implementation plan at `docs/VERSION_PINNING.md`:
+
+- [ ] Add `workflow_version` (INT NOT NULL) and `workflow_snapshot` (JSONB NOT NULL) to Job model
+- [ ] Update JobRepository to persist/read new fields
+- [ ] Capture snapshot at job creation in JobService
+- [ ] Add `workflow_version` to JOB_CREATED event data
+- [ ] Orchestrator uses pinned snapshot instead of live cache
+- [ ] Enrich `result_data._provenance` with workflow_id, version, job_id, completion time
+- [ ] Update Function App query repo to expose version
+- [ ] Tests: snapshot round-trip, existing test fixes
+
+**Transaction Wrapping** (item 14) — Deprioritized: the polling loop self-heals transient inconsistencies and optimistic locking prevents double-processing. Belt-and-suspenders, not a correctness fix.
 
 ### Tier 6: Migration & Future
 

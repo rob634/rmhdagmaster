@@ -408,10 +408,7 @@ class Orchestrator:
                 if job.owner_id != self._owner_id:
                     continue
 
-                workflow = self.workflow_service.get(job.workflow_id)
-                if workflow is None:
-                    logger.warning(f"Workflow not found: {job.workflow_id}")
-                    continue
+                workflow = self._get_workflow_for_job(job)
 
                 # Process the result
                 await self.node_service.process_task_result(result, workflow)
@@ -426,6 +423,10 @@ class Orchestrator:
 
         return count
 
+    def _get_workflow_for_job(self, job: Job) -> WorkflowDefinition:
+        """Get the pinned workflow definition for a job."""
+        return job.get_pinned_workflow()
+
     async def _process_job(self, job: Job) -> None:
         """
         Process a single active job.
@@ -435,14 +436,7 @@ class Orchestrator:
         Args:
             job: Job to process
         """
-        workflow = self.workflow_service.get(job.workflow_id)
-        if workflow is None:
-            logger.error(f"Workflow not found for job {job.job_id}: {job.workflow_id}")
-            await self.job_service.fail_job(
-                job.job_id,
-                f"Workflow not found: {job.workflow_id}",
-            )
-            return
+        workflow = self._get_workflow_for_job(job)
 
         # Check for stuck nodes (timeout detection)
         await self._check_stuck_nodes(job, workflow)
@@ -1251,6 +1245,16 @@ class Orchestrator:
         for node in nodes:
             if node.status == NodeStatus.COMPLETED and node.output:
                 results[node.node_id] = node.output
+
+        # Add provenance metadata
+        job = await self._job_repo.get(job_id)
+        if job:
+            results["_provenance"] = {
+                "workflow_id": job.workflow_id,
+                "workflow_version": job.workflow_version,
+                "job_id": job_id,
+                "completed_at": datetime.now(timezone.utc).isoformat(),
+            }
 
         return results
 

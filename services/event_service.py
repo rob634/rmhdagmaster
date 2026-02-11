@@ -130,6 +130,7 @@ class EventService:
             status=EventStatus.SUCCESS,
             data={
                 "workflow_id": workflow_id,
+                "workflow_version": job.workflow_version,
                 "submitted_by": job.submitted_by,
                 "correlation_id": job.correlation_id,
             },

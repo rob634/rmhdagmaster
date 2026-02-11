@@ -77,6 +77,8 @@ def sample_job(sample_workflow) -> Job:
     return Job(
         job_id="job-test-123",
         workflow_id=sample_workflow.workflow_id,
+        workflow_version=sample_workflow.version,
+        workflow_snapshot=sample_workflow.model_dump(mode="json"),
         status=JobStatus.PENDING,
         input_params={"message": "Hello, World!"},
     )
@@ -618,6 +620,78 @@ class TestRetryLogic:
         assert node.retry_count == 3  # Unchanged
 
 
+class TestVersionPinning:
+    """Tests for workflow version pinning (Tier 5)."""
+
+    def test_snapshot_round_trip(self, sample_workflow):
+        """Serialize a workflow to snapshot, create a Job, deserialize back."""
+        snapshot = sample_workflow.model_dump(mode="json")
+
+        job = Job(
+            job_id="job-pin-001",
+            workflow_id=sample_workflow.workflow_id,
+            workflow_version=sample_workflow.version,
+            workflow_snapshot=snapshot,
+            status=JobStatus.PENDING,
+            input_params={},
+        )
+
+        # Deserialize back via get_pinned_workflow()
+        restored = job.get_pinned_workflow()
+
+        assert restored.workflow_id == sample_workflow.workflow_id
+        assert restored.version == sample_workflow.version
+        assert len(restored.nodes) == len(sample_workflow.nodes)
+        for node_id, node_def in sample_workflow.nodes.items():
+            assert node_id in restored.nodes
+            assert restored.nodes[node_id].type == node_def.type
+
+    def test_workflow_version_required(self):
+        """Job requires workflow_version — omitting it raises ValidationError."""
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            Job(
+                job_id="job-no-version",
+                workflow_id="test",
+                status=JobStatus.PENDING,
+                input_params={},
+                workflow_snapshot={"workflow_id": "test", "name": "t", "nodes": {}},
+            )
+
+    def test_workflow_snapshot_required(self):
+        """Job requires workflow_snapshot — omitting it raises ValidationError."""
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            Job(
+                job_id="job-no-snapshot",
+                workflow_id="test",
+                workflow_version=1,
+                status=JobStatus.PENDING,
+                input_params={},
+            )
+
+    def test_pinned_workflow_preserves_node_types(self, sample_workflow):
+        """Verify node types survive serialization round-trip."""
+        snapshot = sample_workflow.model_dump(mode="json")
+        job = Job(
+            job_id="job-pin-002",
+            workflow_id=sample_workflow.workflow_id,
+            workflow_version=sample_workflow.version,
+            workflow_snapshot=snapshot,
+            status=JobStatus.PENDING,
+            input_params={},
+        )
+
+        restored = job.get_pinned_workflow()
+
+        assert restored.nodes["START"].type == NodeType.START
+        assert restored.nodes["process"].type == NodeType.TASK
+        assert restored.nodes["process"].handler == "echo"
+        assert restored.nodes["END"].type == NodeType.END
+
+
 class TestEndToEnd:
     """End-to-end simulation tests."""
 
@@ -635,6 +709,8 @@ class TestEndToEnd:
             job = Job(
                 job_id="job-e2e-test",
                 workflow_id=sample_workflow.workflow_id,
+                workflow_version=sample_workflow.version,
+                workflow_snapshot=sample_workflow.model_dump(mode="json"),
                 status=JobStatus.PENDING,
                 input_params={"message": "Hello, E2E!"},
             )

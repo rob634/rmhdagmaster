@@ -94,10 +94,12 @@ class JobService:
             logger.info(f"Returning existing job {job_id}")
             return existing
 
-        # Create job
+        # Create job with pinned workflow version + snapshot
         job = Job(
             job_id=job_id,
             workflow_id=workflow_id,
+            workflow_version=workflow.version,
+            workflow_snapshot=workflow.model_dump(mode="json"),
             status=JobStatus.PENDING,
             input_params=input_params,
             submitted_by=submitted_by,

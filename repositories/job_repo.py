@@ -51,13 +51,15 @@ class JobRepository:
                     job_id, workflow_id, status, input_params, result_data,
                     error_message, created_at, started_at,
                     completed_at, submitted_by, correlation_id, version,
-                    owner_id, owner_heartbeat_at
+                    owner_id, owner_heartbeat_at,
+                    workflow_version, workflow_snapshot
                 ) VALUES (
                     %(job_id)s, %(workflow_id)s, %(status)s, %(input_params)s,
                     %(result_data)s, %(error_message)s,
                     %(created_at)s, %(started_at)s, %(completed_at)s,
                     %(submitted_by)s, %(correlation_id)s, %(version)s,
-                    %(owner_id)s, %(owner_heartbeat_at)s
+                    %(owner_id)s, %(owner_heartbeat_at)s,
+                    %(workflow_version)s, %(workflow_snapshot)s
                 )
                 """).format(TABLE_JOBS),
                 {
@@ -75,6 +77,8 @@ class JobRepository:
                     "version": job.version,
                     "owner_id": job.owner_id,
                     "owner_heartbeat_at": job.owner_heartbeat_at,
+                    "workflow_version": job.workflow_version,
+                    "workflow_snapshot": Json(job.workflow_snapshot),
                 },
             )
             logger.info(f"Created job {job.job_id} for workflow {job.workflow_id}")
@@ -350,6 +354,8 @@ class JobRepository:
             result_data=row.get("result_data"),
             error_message=row.get("error_message"),
             metadata=row.get("metadata") or {},
+            workflow_version=row["workflow_version"],
+            workflow_snapshot=row["workflow_snapshot"],
             created_at=row["created_at"],
             started_at=row.get("started_at"),
             completed_at=row.get("completed_at"),
@@ -391,13 +397,15 @@ class JobRepository:
                     job_id, workflow_id, status, input_params, result_data,
                     error_message, created_at, started_at,
                     completed_at, submitted_by, correlation_id, version,
-                    owner_id, owner_heartbeat_at
+                    owner_id, owner_heartbeat_at,
+                    workflow_version, workflow_snapshot
                 ) VALUES (
                     %(job_id)s, %(workflow_id)s, %(status)s, %(input_params)s,
                     %(result_data)s, %(error_message)s,
                     %(created_at)s, %(started_at)s, %(completed_at)s,
                     %(submitted_by)s, %(correlation_id)s, %(version)s,
-                    %(owner_id)s, %(owner_heartbeat_at)s
+                    %(owner_id)s, %(owner_heartbeat_at)s,
+                    %(workflow_version)s, %(workflow_snapshot)s
                 )
                 """).format(TABLE_JOBS),
                 {
@@ -415,6 +423,8 @@ class JobRepository:
                     "version": job.version,
                     "owner_id": job.owner_id,
                     "owner_heartbeat_at": job.owner_heartbeat_at,
+                    "workflow_version": job.workflow_version,
+                    "workflow_snapshot": Json(job.workflow_snapshot),
                 },
             )
             logger.info(

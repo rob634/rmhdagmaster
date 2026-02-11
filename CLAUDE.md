@@ -24,23 +24,25 @@ For architecture details, see `docs/ARCHITECTURE.md`.
 
 ## Design Principles
 
-1. **Orchestrator purity** — The orchestrator coordinates, never executes business logic.
+1. **FIRST PRINCIPLE DESIGN** - There is NOTHING to be backward compatible with- all design changes mean a new schema ex nihilo no fallbacks no accomodating old patterns we are architectuing and building a new app
 
-2. **Worker idempotency** — Any task can be retried safely; workers handle duplicate delivery.
+2. **Orchestrator purity** — The orchestrator coordinates, never executes business logic.
 
-3. **State lives in Postgres** — Workers are stateless; all durable state is in the database.
+3. **Worker idempotency** — Any task can be retried safely; workers handle duplicate delivery.
 
-4. **Repository pattern** — All database access goes through repository classes. No raw `psycopg.connect` outside the infrastructure layer.
+4. **State lives in Postgres** — Workers are stateless; all durable state is in the database.
 
-5. **Pydantic is the schema** — Models are the single source of truth for data structures. All serialization crosses boundaries via `.model_dump()` / `.model_validate()`—never raw JSON/dict manipulation. Pydantic V2 only.
+5. **Repository pattern** — All database access goes through repository classes. No raw `psycopg.connect` outside the infrastructure layer.
 
-6. **Explicit over implicit** — Dependencies, queues, and handlers are declared in YAML. No magic.
+6. **Pydantic is the schema** — Models are the single source of truth for data structures. All serialization crosses boundaries via `.model_dump()` / `.model_validate()`—never raw JSON/dict manipulation. Pydantic V2 only.
 
-7. **Fail fast, recover gracefully** — Errors surface immediately; system resumes from last known state.
+7. **Explicit over implicit** — Dependencies, queues, and handlers are declared in YAML. No magic.
 
-8. **Observable by default** — Every state transition logs a JobEvent.
+8. **Fail fast, recover gracefully** — Errors surface immediately; system resumes from last known state. NO FALLBACK PATTERNS and absolutely no hardcoded values. System should fail if parameters are incorrect unless we need to implement parameter logic for a specific reason.
 
-9. **Defensive concurrency** — PostgreSQL advisory locks prevent multi-instance conflicts. Optimistic locking (version columns) detects concurrent modifications. See `docs/IMPLEMENTATION.md` Section 12.
+9. **Observable by default** — Every state transition logs a JobEvent.
+
+10. **Defensive concurrency** — PostgreSQL advisory locks prevent multi-instance conflicts. Optimistic locking (version columns) detects concurrent modifications. See `docs/IMPLEMENTATION.md` Section 12.
 
 ---
 

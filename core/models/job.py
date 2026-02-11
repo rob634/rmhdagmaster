@@ -84,6 +84,17 @@ class Job(JobData):
         description="Additional job metadata (source, tags, etc.)"
     )
 
+    # Workflow version pinning (captured at job creation, immutable)
+    workflow_version: int = Field(
+        ...,
+        ge=1,
+        description="Workflow version pinned at job creation time"
+    )
+    workflow_snapshot: Dict[str, Any] = Field(
+        ...,
+        description="Serialized WorkflowDefinition captured at job creation (immutable)"
+    )
+
     # Timestamps
     created_at: datetime = Field(default_factory=datetime.utcnow)
     started_at: Optional[datetime] = Field(
@@ -140,6 +151,11 @@ class Job(JobData):
             return None
         end_time = self.completed_at or datetime.utcnow()
         return (end_time - self.started_at).total_seconds()
+
+    def get_pinned_workflow(self) -> "WorkflowDefinition":
+        """Deserialize the pinned workflow snapshot."""
+        from core.models.workflow import WorkflowDefinition
+        return WorkflowDefinition.model_validate(self.workflow_snapshot)
 
     def can_transition_to(self, new_status: JobStatus) -> bool:
         """

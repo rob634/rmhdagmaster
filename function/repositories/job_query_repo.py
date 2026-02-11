@@ -51,7 +51,7 @@ class JobQueryRepository(FunctionRepository):
                 created_at, started_at, completed_at, updated_at,
                 owner_id, owner_heartbeat_at,
                 correlation_id, idempotency_key,
-                version
+                version, workflow_version
             FROM {self.TABLE}
             WHERE job_id = %s
         """
@@ -72,7 +72,8 @@ class JobQueryRepository(FunctionRepository):
                 job_id, workflow_id, status,
                 input_params, result_data, error_message,
                 created_at, started_at, completed_at, updated_at,
-                owner_id, correlation_id, idempotency_key
+                owner_id, correlation_id, idempotency_key,
+                workflow_version
             FROM {self.TABLE}
             WHERE correlation_id = %s
             ORDER BY created_at DESC
