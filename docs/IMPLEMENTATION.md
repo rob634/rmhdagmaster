@@ -112,34 +112,23 @@ import azure.functions as func
 
 app = func.FunctionApp(http_auth_level=func.AuthLevel.ANONYMOUS)
 
-# Early probes (always available)
-@app.route(route="livez", methods=["GET"])
-def liveness_probe(req: func.HttpRequest) -> func.HttpResponse:
-    return func.HttpResponse('{"alive": true}', status_code=200,
-                             headers={"Content-Type": "application/json"})
-
-@app.route(route="readyz", methods=["GET"])
-def readiness_probe(req: func.HttpRequest) -> func.HttpResponse:
-    from function.startup import STARTUP_STATE
-    if STARTUP_STATE.all_passed:
-        return func.HttpResponse('{"ready": true}', status_code=200,
-                                 headers={"Content-Type": "application/json"})
-    # ... return 503 with failed check details ...
+# Early probes (always available, include version + build_date)
+@app.route(route="livez", methods=["GET"])  # Liveness (always 200)
+@app.route(route="readyz", methods=["GET"]) # Readiness (503 if startup failed)
 
 # Startup validation
 from function.startup import validate_startup, STARTUP_STATE
 _startup_result = validate_startup()
 
-# Conditional blueprint registration
+# Conditional blueprint registration (6 blueprints)
 if STARTUP_STATE.all_passed:
-    from function.blueprints.gateway_bp import gateway_bp
-    app.register_functions(gateway_bp)
-    from function.blueprints.status_bp import status_bp
-    app.register_functions(status_bp)
-    from function.blueprints.admin_bp import admin_bp
-    app.register_functions(admin_bp)
-    from function.blueprints.proxy_bp import proxy_bp
-    app.register_functions(proxy_bp)
+    from function.blueprints.gateway_bp import gateway_bp      # Job submission proxy
+    from function.blueprints.status_bp import status_bp        # Status queries (read-only)
+    from function.blueprints.admin_bp import admin_bp          # Admin endpoints (read-only)
+    from function.blueprints.proxy_bp import proxy_bp          # HTTP proxy to Docker apps
+    from function.blueprints.asset_bp import asset_bp          # Asset queries + mutation proxy
+    from function.blueprints.platform_bp import platform_bp    # B2B submit + status polling
+    # ... register all ...
 ```
 
 ### 1.4 Startup Validation
@@ -159,80 +148,80 @@ Validates environment variables, database connectivity, and Service Bus configur
 #### Request Models (`function/models/requests.py`)
 
 ```python
-class PlatformSubmitRequest(BaseModel):
-    """B2B apps provide ONLY their identity and job parameters."""
+class AssetSubmitRequest(BaseModel):
+    """B2B asset submission — identity fields + processing parameters."""
+    platform_id: str = Field(..., max_length=64)
+    platform_refs: Dict[str, Any] = Field(default_factory=dict)
+    data_type: str = Field(default="raster", max_length=32)
+    version_label: Optional[str] = Field(default=None, max_length=64)
     workflow_id: str = Field(..., max_length=64)
     input_params: Dict[str, Any] = Field(default_factory=dict)
-    submitted_by: str = Field(..., max_length=64)
-    callback_url: Optional[str] = Field(default=None, max_length=512)
-    priority: int = Field(default=0, ge=0, le=10)
-    idempotency_key: Optional[str] = Field(default=None, max_length=128)
-
-class BatchSubmitRequest(BaseModel):
-    jobs: List[JobSubmitRequest] = Field(..., min_length=1, max_length=100)
-
-class JobQueryRequest(BaseModel):
-    status: Optional[str] = None
-    workflow_id: Optional[str] = None
-    limit: int = Field(default=50, ge=1, le=500)
-    offset: int = Field(default=0, ge=0)
-    include_nodes: bool = False
+    submitted_by: Optional[str] = Field(default=None, max_length=64)
+    request_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
 ```
 
 #### Response Models (`function/models/responses.py`)
 
 ```python
-class PlatformSubmitResponse(BaseModel):
-    """The request_id is the ONLY identifier B2B apps need."""
-    request_id: str
-    workflow_id: str
-    submitted_at: datetime
-    status: str = "accepted"
+class ErrorResponse(BaseModel):
+    """Standard error envelope."""
+    error: str
+    details: Optional[str] = None
 
-class PlatformStatusResponse(BaseModel):
-    """B2B-friendly status. Internal details are hidden."""
-    request_id: str
-    workflow_id: str
-    status: str  # pending, running, completed, failed
-    submitted_at: datetime
-    completed_at: Optional[datetime] = None
-    result: Optional[Dict[str, Any]] = None
-    error: Optional[str] = None
-    progress: Optional[Dict[str, Any]] = None
-
-class InternalJobStatusResponse(BaseModel):
-    """Admin/debugging only - NOT exposed through /platform/* endpoints."""
+class JobStatusResponse(BaseModel):
+    """Internal job status for admin/debugging."""
     job_id: str
     workflow_id: str
     status: str
     correlation_id: Optional[str] = None
+    asset_id: Optional[str] = None
     created_at: datetime
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
     error_message: Optional[str] = None
     owner_id: Optional[str] = None
-    nodes: Optional[List[Dict[str, Any]]] = None
+
+class NodeStatusResponse(BaseModel):
+    """Node status within a job."""
+    node_id: str
+    job_id: str
+    status: str
+    task_id: Optional[str] = None
+    output: Optional[Dict[str, Any]] = None
+    error_message: Optional[str] = None
+    retry_count: int = 0
+    dispatched_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
 ```
 
-### 1.6 Endpoint Summary (22 Endpoints)
+### 1.6 Endpoint Summary
 
 | Group | Route | Method | Purpose |
 |-------|-------|--------|---------|
 | **Infrastructure** | `/livez` | GET | Liveness probe (always 200) |
 | | `/readyz` | GET | Readiness probe (checks startup) |
-| **Platform** | `/platform/submit` | POST | Submit job (returns request_id) |
-| | `/platform/status/{request_id}` | GET | B2B status polling |
-| **Gateway** | `/gateway/submit/batch` | POST | Batch job submission |
-| | `/gateway/health` | GET | Gateway health check |
+| **Platform (B2B)** | `/platform/submit` | POST | Submit asset (proxy → orchestrator) |
+| | `/platform/status/{request_id}` | GET | B2B status polling by correlation_id |
+| **Asset** | `/assets/{asset_id}` | GET | Get asset detail (read-only) |
+| | `/assets/{asset_id}/versions` | GET | List versions (read-only) |
+| | `/assets/{asset_id}/versions/{ord}/approve` | POST | Approve version (proxy) |
+| | `/assets/{asset_id}/versions/{ord}/reject` | POST | Reject version (proxy) |
+| | `/assets/{asset_id}/clearance/cleared` | POST | Mark cleared (proxy) |
+| | `/assets/{asset_id}/clearance/public` | POST | Mark public (proxy) |
+| | `/assets/{asset_id}` | DELETE | Soft delete asset (proxy) |
+| **Gateway** | `/gateway/submit` | POST | Direct job submission (proxy) |
 | **Status** | `/status/job/{job_id}` | GET | Internal job status |
 | | `/status/jobs` | GET | List jobs with filters |
 | | `/status/job/{job_id}/nodes` | GET | Nodes for a job |
 | | `/status/job/{job_id}/events` | GET | Events for a job |
-| | `/status/stats` | GET | Job counts by status |
-| | `/status/lookup` | GET | Lookup by correlation_id or idempotency_key |
+| | `/status/lookup/{correlation_id}` | GET | Lookup job by correlation_id |
 | **Admin** | `/admin/health` | GET | Comprehensive health check |
 | | `/admin/config` | GET | Non-sensitive configuration |
 | | `/admin/active-jobs` | GET | Currently active jobs |
+| | `/admin/recent-events` | GET | Recent events across all jobs |
+| | `/admin/orphans` | GET | Jobs with stale heartbeats |
+| | `/admin/running-nodes` | GET | Currently running nodes |
+| | `/admin/failed-nodes` | GET | Recently failed nodes |
 | **Proxy** | `/proxy/{target}/{path}` | * | Forward to orchestrator/worker |
 | | `/proxy/health` | GET | Health of all Docker apps |
 
@@ -260,9 +249,10 @@ class FunctionRepository:
 ```
 
 Domain repositories:
-- `JobQueryRepository` - `get_job()`, `list_jobs()`, `count_jobs()`, `get_job_stats()`, `get_active_jobs()`, `get_job_by_correlation_id()`, `get_job_by_idempotency_key()`
-- `NodeQueryRepository` - `get_node()`, `get_nodes_for_job()`, `get_nodes_by_status()`, `count_nodes_by_status()`
+- `JobQueryRepository` - `get_job()`, `list_jobs()`, `count_jobs()`, `get_job_stats()`, `get_active_jobs()`, `get_job_by_correlation_id()`, `get_orphan_jobs()`
+- `NodeQueryRepository` - `get_node(job_id, node_id)` (composite PK), `get_nodes_for_job()`, `get_nodes_by_status()`, `get_running_nodes()`, `get_failed_nodes()`
 - `EventQueryRepository` - `get_events_for_job()`, `get_recent_events()`, `count_events_by_type()`
+- `AssetQueryRepository` - `get_asset()`, `get_versions()` (read-only asset/version queries)
 
 ### 1.8 Platform Blueprint (B2B ACL Proxy)
 
@@ -754,41 +744,55 @@ with self._tracer.start_as_current_span("execute_handler", context=context): ...
 
 ## 5. Core Engine (Remaining Phase 1 Work)
 
-### 5.1 GeospatialAsset Integration (V0.8)
+### 5.1 GeospatialAsset Integration
 
-**Status**: TODO
+**Status**: DONE (Phase 4A — 11 FEB 2026)
 
-The V0.8 design separates Requests from Jobs via GeospatialAsset:
+Business domain models with first-principle design (no backward compatibility with Epoch 4):
 
 ```
-dag_api_requests (N) --> dag_geospatial_assets (1) <-- (N) dag_jobs
-                                │
-                                └── current_job_id --> dag_jobs
+Platform (registry) ─validate refs─> GeospatialAsset (aggregate root)
+                                        │
+                                        └── AssetVersion (child, per semantic version)
+                                              │
+                                              └── current_job_id ──> dag_jobs.asset_id
 ```
+
+- **GeospatialAsset**: identity = `hash(platform_id + sorted(platform_refs))`, clearance state machine (UNCLEARED → OUO → PUBLIC)
+- **AssetVersion**: keyed by `(asset_id, version_ordinal)`, approval (PENDING → APPROVED/REJECTED), processing (QUEUED → PROCESSING → COMPLETED/FAILED), revision counter for reprocessing
+- **Platform**: registry of B2B platforms with `required_refs` validation
+- **GeospatialAssetService**: coordination layer — submit, callbacks, approval, clearance, reprocessing (28 tests)
+- **Domain routes**: `api/domain_routes.py` — 7 orchestrator HTTP endpoints for mutations
+- **Gateway proxy**: `function/blueprints/platform_bp.py` (submit proxy), `asset_bp.py` (query + mutation proxy)
 
 | Task | Status | File |
 |------|--------|------|
-| Create GeospatialAsset model | [ ] | `core/models/geospatial_asset.py` |
-| Create ApiRequest model | [ ] | `core/models/api_request.py` |
-| Create AssetRevision model | [ ] | `core/models/asset_revision.py` |
-| Integration with dag_jobs | [ ] | Link via asset_id + current_job_id |
+| Create GeospatialAsset model | [x] | `core/models/geospatial_asset.py` |
+| Create AssetVersion model | [x] | `core/models/asset_version.py` |
+| Create Platform model | [x] | `core/models/platform.py` |
+| Asset + version repos | [x] | `repositories/asset_repo.py`, `repositories/asset_version_repo.py` |
+| Platform repo | [x] | `repositories/platform_repo.py` |
+| GeospatialAssetService | [x] | `services/asset_service.py` |
+| Orchestrator domain routes | [x] | `api/domain_routes.py` |
+| Orchestrator callback wiring | [x] | `orchestrator/loop.py` (`_check_job_completion`) |
+| Gateway platform_bp (proxy) | [x] | `function/blueprints/platform_bp.py` |
+| Gateway asset_bp (proxy+read) | [x] | `function/blueprints/asset_bp.py` |
+| OrchestratorClient | [x] | `function/services/orchestrator_client.py` |
+| asset_id on Job model | [x] | `core/models/job.py` |
+| Bootstrap seed-platforms | [x] | `api/bootstrap_routes.py` |
+| Integration with dag_jobs | [x] | `asset_id` + `correlation_id` on Job |
 
 ### 5.2 Additional Tables (Tier 3-7)
 
+Approval and file tracking are now integrated into the domain models (5.1), not separate tables:
+
 | Task | Status | Description |
 |------|--------|-------------|
-| dag_approvals model | [ ] | Approval workflow |
-| dag_blob_assets model | [ ] | File tracking |
+| Approval workflow | [x] | `approval_state` on AssetVersion (PENDING_REVIEW → APPROVED/REJECTED) |
+| File tracking | [x] | `blob_path`, `table_name`, `stac_item_id`, `stac_collection_id` on AssetVersion |
 | dag_external_services model | [ ] | Callback endpoints (DDH, ADF, webhooks) |
 | dag_dataset_refs model | [ ] | Data lineage tracking |
 | dag_promoted model | [ ] | Externally-published datasets |
-
-Files to create:
-- `core/models/approval.py`
-- `core/models/blob_asset.py`
-- `core/models/external_service.py`
-- `core/models/dataset_ref.py`
-- `core/models/promoted.py`
 
 ### 5.3 Data Integrity Gaps
 
@@ -942,30 +946,44 @@ nodes:
 
 ## 8. API Integration (Phase 4)
 
-**Goal**: External API uses DAG orchestrator.
+**Status**: Phase 4A-4C DONE (12 FEB 2026)
 
-### 8.1 Endpoints
+**Goal**: External API uses DAG orchestrator with business domain layer.
+
+### 8.1 Orchestrator Domain Endpoints (`api/domain_routes.py`)
 
 ```
-POST /api/dag/submit         Submit workflow job
-GET  /api/dag/jobs/{id}      Job status
-GET  /api/dag/jobs/{id}/nodes  Node states
-POST /api/dag/jobs/{id}/cancel Cancel job
-GET  /health                 Health endpoint
+POST   /api/v1/domain/submit                                    Submit asset
+POST   /api/v1/domain/assets/{id}/versions/{ord}/approve        Approve version
+POST   /api/v1/domain/assets/{id}/versions/{ord}/reject         Reject version
+POST   /api/v1/domain/assets/{id}/clearance/cleared             Mark cleared
+POST   /api/v1/domain/assets/{id}/clearance/public              Mark public
+DELETE /api/v1/domain/assets/{id}                                Soft delete
 ```
 
-### 8.2 Task Checklist
+### 8.2 Existing Orchestrator Endpoints (`api/routes.py`)
+
+```
+GET    /api/v1/status/job/{id}         Job status
+GET    /api/v1/status/job/{id}/nodes   Node states
+GET    /api/v1/status/job/{id}/events  Job event timeline
+GET    /api/v1/orchestrator/status     Orchestrator stats
+POST   /api/v1/callbacks/task-result   Worker result callback (UPSERT)
+```
+
+### 8.3 Task Checklist
 
 | Task | Status | File |
 |------|--------|------|
-| FastAPI setup | [ ] | Create `orchestrator/api/` module |
-| Submit endpoint | [ ] | `POST /api/dag/submit` |
-| Status endpoint | [ ] | `GET /api/dag/jobs/{id}` |
-| Node status | [ ] | `GET /api/dag/jobs/{id}/nodes` |
-| Cancel endpoint | [ ] | `POST /api/dag/jobs/{id}/cancel` |
-| Health endpoint | [ ] | `GET /health` |
-| Platform integration | [ ] | DDH -> DAG routing |
-| Backward compat | [ ] | Legacy endpoints still work |
+| FastAPI routes (orchestrator) | [x] | `api/routes.py`, `api/domain_routes.py` |
+| Domain submit endpoint | [x] | `POST /api/v1/domain/submit` |
+| Status endpoint | [x] | `GET /api/v1/status/job/{id}` |
+| Node status | [x] | `GET /api/v1/status/job/{id}/nodes` |
+| Cancel endpoint | [ ] | `POST /api/v1/jobs/{id}/cancel` (not yet needed) |
+| Health endpoints | [x] | `/livez`, `/readyz`, `/health` |
+| Platform integration (B2B) | [x] | `platform_bp.py` → `OrchestratorClient` → `domain_routes.py` |
+| Processing callbacks | [x] | `orchestrator/loop.py` → `asset_service.on_processing_completed/failed` |
+| Bootstrap seed-platforms | [x] | `POST /api/v1/bootstrap/seed-platforms` |
 
 ---
 
@@ -987,13 +1005,22 @@ GET  /health                 Health endpoint
 ### 9.2 Success Criteria
 
 **MVP (Phase 3 Complete)**:
-- [ ] Orchestrator runs in Azure Web App
-- [ ] Can submit raster workflow via API
-- [ ] Conditional routing works (size-based)
-- [ ] Fan-out works (tiled rasters)
+- [x] Orchestrator runs in Azure Web App
+- [x] Can submit workflow via API (echo + fan-out verified E2E)
+- [x] Conditional routing works (size-based)
+- [x] Fan-out works (3-item fan-out verified in Azure)
 - [ ] Failures detected within 60 seconds
-- [ ] No "last task turns out lights" pattern
-- [ ] Existing workers process DAG tasks
+- [x] No "last task turns out lights" pattern
+- [x] Existing workers process DAG tasks (Docker worker deployed)
+
+**Business Domain (Phase 4 Complete)**:
+- [x] GeospatialAsset + AssetVersion domain models
+- [x] Platform registry with required_refs validation
+- [x] B2B submit → proxy → orchestrator → DAG → callback flow
+- [x] Processing callbacks update version state (COMPLETED/FAILED)
+- [x] Approval workflow (PENDING_REVIEW → APPROVED/REJECTED)
+- [x] Clearance workflow (UNCLEARED → OUO → PUBLIC)
+- [ ] B2B E2E verified with live platform seed data in Azure
 
 **Production Ready (Phase 5 Complete)**:
 - [ ] All workflows migrated to DAG
@@ -1777,6 +1804,28 @@ Replaced single-leader model with competing consumers:
 - **No-defaults policy**: Removed all default queue names across 12 files. Missing queue config causes ValueError at startup, 503 at request time, UNHEALTHY in health checks. Affected files: `messaging/config.py`, `worker/contracts.py`, `repositories/job_queue_repo.py`, `function/config.py`, `function/blueprints/gateway_bp.py`, `gateway/routes.py`, `health/checks/startup.py`, `health/checks/worker.py`, `core/models/workflow.py`, `handlers/registry.py`, `orchestrator/loop.py`
 - CLI test tool: `tools/submit_job.py` — submits JobQueueMessage to Service Bus, supports `--poll` for status tracking
 
+### Phase 4: Business Domain Layer (09-12 FEB 2026)
+
+**Phase 4A**: GeospatialAsset service (09 FEB)
+- Domain models: Platform, GeospatialAsset, AssetVersion (with clearance, approval, processing state machines)
+- Repositories: PlatformRepository, AssetRepository, AssetVersionRepository
+- GeospatialAssetService: submit, callbacks, approval, clearance, reprocessing
+- 24 unit tests in `tests/test_asset_service.py`
+
+**Phase 4B**: Gateway business API (12 FEB)
+- DELETE pass: Removed gateway DB write paths, purged JobSubmitRequest/idempotency_key
+- REBUILD pass: `api/domain_routes.py` (7 endpoints), `OrchestratorClient` (9 methods)
+- PROXY pass: `platform_bp.py` (B2B submit+poll), `asset_bp.py` (queries+mutations)
+- DEPLOY pass: v0.17.0 deployed to Azure (orchestrator + worker + gateway)
+- Query repos aligned to actual schema columns
+- 17 endpoint tests + 12 proxy tests
+
+**Phase 4C**: DAG callback wiring (12 FEB)
+- `orchestrator/loop.py` `_check_job_completion()` calls `asset_service.on_processing_completed/failed`
+- Callback errors logged but swallowed (don't block job completion)
+- Standalone jobs (no asset_id) skip callbacks silently
+- 4 callback wiring tests in `tests/test_domain_routes.py`
+
 ### Database Schema Deployment (28 JAN 2026)
 
 ```
@@ -1859,9 +1908,11 @@ FUTURE HANDLERS (to build)
 
 | Component | File |
 |-----------|------|
+| **Orchestrator** | |
 | Main loop | `orchestrator/loop.py` |
 | Dependency resolution | `orchestrator/engine/evaluator.py` |
 | Template resolution | `orchestrator/engine/templates.py` |
+| **Core Models** | |
 | Job model | `core/models/job.py` |
 | Node model | `core/models/node.py` |
 | Task result model | `core/models/task.py` |
@@ -1869,38 +1920,54 @@ FUTURE HANDLERS (to build)
 | Lease model | `core/models/lease.py` |
 | Checkpoint model | `core/models/checkpoint.py` |
 | Job queue message | `core/models/job_queue_message.py` |
+| GeospatialAsset model | `core/models/geospatial_asset.py` |
+| AssetVersion model | `core/models/asset_version.py` |
+| Platform model | `core/models/platform.py` |
+| **Repositories** | |
 | Job repository | `repositories/job_repo.py` |
 | Node repository | `repositories/node_repo.py` |
 | Task repository | `repositories/task_repo.py` |
 | Event repository | `repositories/event_repo.py` |
 | Checkpoint repository | `repositories/checkpoint_repo.py` |
 | Job queue repository | `repositories/job_queue_repo.py` |
+| Asset repository | `repositories/asset_repo.py` |
+| AssetVersion repository | `repositories/asset_version_repo.py` |
+| Platform repository | `repositories/platform_repo.py` |
+| **Infrastructure** | |
 | Lock service | `infrastructure/locking.py` |
 | Service Bus | `infrastructure/service_bus.py` |
 | Base repository | `infrastructure/base_repository.py` |
+| Blob storage | `infrastructure/storage.py` |
+| **Services** | |
 | Job service | `services/job_service.py` |
 | Node service | `services/node_service.py` |
 | Event service | `services/event_service.py` |
 | Checkpoint service | `services/checkpoint_service.py` |
+| Asset service | `services/asset_service.py` |
+| **Orchestrator API** | |
 | API routes | `api/routes.py` |
+| Domain routes | `api/domain_routes.py` |
 | UI routes | `api/ui_routes.py` |
 | Bootstrap API | `api/bootstrap_routes.py` |
+| **Function App (Gateway)** | |
 | Function App entry | `function_app.py` |
-| Function blueprints | `function/blueprints/*.py` |
+| Platform blueprint (B2B) | `function/blueprints/platform_bp.py` |
+| Asset blueprint (queries + proxy) | `function/blueprints/asset_bp.py` |
+| Gateway blueprint (submit proxy) | `function/blueprints/gateway_bp.py` |
+| Status blueprint (read-only) | `function/blueprints/status_bp.py` |
+| Admin blueprint (read-only) | `function/blueprints/admin_bp.py` |
+| Proxy blueprint (HTTP forward) | `function/blueprints/proxy_bp.py` |
+| Orchestrator client | `function/services/orchestrator_client.py` |
+| **Tools** | |
 | CLI test tool | `tools/submit_job.py` |
 
 ### Files To Be Created
 
 | Priority | Component | File |
 |----------|-----------|------|
-| ~~P2.2~~ | ~~Fan-Out Logic~~ | ~~Integrated into `orchestrator/engine/evaluator.py` + `orchestrator/loop.py`~~ |
-| ~~P2.3~~ | ~~Fan-In Logic~~ | ~~Integrated into `orchestrator/loop.py`~~ |
 | P3.1 | Progress Service | `services/progress_service.py` |
 | P3.3 | Metrics Service | `services/metrics_service.py` |
 | P3.4 | Tracing Config | `infrastructure/tracing.py` |
-| -- | GeospatialAsset | `core/models/geospatial_asset.py` |
-| -- | API Request | `core/models/api_request.py` |
-| -- | Blob Asset | `core/models/blob_asset.py` |
 | -- | Config Defaults | `core/config/defaults.py` |
 
 ---
@@ -1953,5 +2020,5 @@ jobs:
 
 ---
 
-*Document generated: 07 FEB 2026*
+*Document updated: 13 FEB 2026*
 *Sources: ADVANCED.md, FUNCTION_APP_PLAN.md, TODO.md, MULTI_ORCH_IMPL_PLAN.md, UI_PLAN.md, H3.md*

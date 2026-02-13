@@ -29,6 +29,8 @@ from core.models.lease import OrchestratorLease
 from core.models.platform import Platform
 from core.models.geospatial_asset import GeospatialAsset
 from core.models.asset_version import AssetVersion
+from core.models.layer_metadata import LayerMetadata
+from core.models.layer_catalog import LayerCatalog
 
 __all__ = [
     # Workflow
@@ -56,4 +58,6 @@ __all__ = [
     "Platform",
     "GeospatialAsset",
     "AssetVersion",
+    "LayerMetadata",
+    "LayerCatalog",
 ]

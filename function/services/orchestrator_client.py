@@ -152,3 +152,32 @@ class OrchestratorClient:
             f"/api/v1/domain/assets/{asset_id}",
             params={"actor": actor},
         )
+
+    # ------------------------------------------------------------------
+    # LAYER METADATA
+    # ------------------------------------------------------------------
+
+    def create_metadata(
+        self, body: Dict[str, Any]
+    ) -> Tuple[int, Dict[str, Any]]:
+        """POST /api/v1/domain/metadata/"""
+        return self._request("POST", "/api/v1/domain/metadata/", json_body=body)
+
+    def update_metadata(
+        self, asset_id: str, body: Dict[str, Any]
+    ) -> Tuple[int, Dict[str, Any]]:
+        """PUT /api/v1/domain/metadata/{asset_id}"""
+        return self._request(
+            "PUT",
+            f"/api/v1/domain/metadata/{asset_id}",
+            json_body=body,
+        )
+
+    def delete_metadata(
+        self, asset_id: str
+    ) -> Tuple[int, Dict[str, Any]]:
+        """DELETE /api/v1/domain/metadata/{asset_id}"""
+        return self._request(
+            "DELETE",
+            f"/api/v1/domain/metadata/{asset_id}",
+        )

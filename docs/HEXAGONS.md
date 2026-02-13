@@ -30,7 +30,7 @@ Build an H3 levels 2–7 zonal statistics pipeline that aggregates every raster 
 - No spatial joins needed — zonal stats use raster-vector intersection (`exactextract` / `rasterstats`), not PostGIS `ST_Intersects`
 - The only spatial query needed is "which L3 cells intersect this raster's bounding box?" — `h3.polygon_to_cells(bbox, res=3)` handles this without a database
 
-**Land filter**: At job start, compute the set of L3 cells that intersect the land geometry. Pass this filtered cell list to the fan-out node. All descendants of excluded L3 cells are automatically excluded.
+**Land filter**: See Section 2.6 — Static L3 Land Cell List.
 
 **H3 aperture-7 hierarchy** (each hex cell has exactly 7 children):
 
@@ -78,11 +78,11 @@ This applies to: road length aggregation (Section 10), polygon area aggregation 
 
 Workers handle both paths behind a unified interface — the DAG task params specify the access method.
 
-### 2.3 Update Model: Batch + Manual
+### 2.4 Update Model: Batch + Manual
 
 Not event-driven. Analyst triggers a batch run for a raster catalog (or single raster). No automatic reprocessing when new data appears. This keeps the system simple and predictable.
 
-### 2.4 No Database for H3 Stats — Parquet is the Only Data Layer
+### 2.5 No Database for H3 Stats — Parquet is the Only Data Layer
 
 **Decision**: No OLTP database for computed statistics. Parquet files on blob storage are the sole data layer.
 
@@ -95,6 +95,25 @@ Not event-driven. Analyst triggers a batch run for a raster catalog (or single r
 
 **What does live in the database**: The computation catalog (Section 5). Three small tables defining *what* to compute, *what was computed*, and *what files exist*. Recipe book in PostgreSQL, output on blob storage.
 
+### 2.6 Static L3 Land Cell List
+
+**Decision**: Pre-compute the set of L3 cell IDs that cover land and littoral waters. Store as a static artifact (checked into the repo or hosted on blob storage). No runtime geometry intersection.
+
+**Rationale**:
+- The land/ocean boundary doesn't change between runs — computing it dynamically at job start is wasted work
+- A static list of ~12,000–15,000 L3 cell IDs is trivial to store (~200 KB as a text file or JSON array)
+- Eliminates the `land_filter` node entirely — the `discover` node intersects the raster's bounding box against the static set using `h3.polygon_to_cells(bbox, res=3)` ∩ `LAND_L3_CELLS`
+- One fewer DAG node = simpler workflow, faster job start, fewer failure modes
+- Updating the list (e.g., adding coastal reclamation) is an explicit, versioned change — not a silent runtime recomputation
+
+**Generation** (one-time):
+1. Load land + littoral geometry (Natural Earth 10m coastline or equivalent)
+2. `h3.polygon_to_cells(land_geometry, res=3)` → set of L3 cell IDs
+3. Save to `data/h3_land_l3_cells.json` (or equivalent)
+4. Commit to repo or upload to blob storage
+
+**Usage in workflow**: The `discover` node loads the static list, computes the raster's L3 coverage via `h3.polygon_to_cells(bbox, res=3)`, and emits the intersection as the fan-out input. No `land_filter` node needed.
+
 ---
 
 ## 3. DAG Workflow Design
@@ -103,12 +122,8 @@ Not event-driven. Analyst triggers a batch run for a raster catalog (or single r
 
 ```
 ┌─────────────┐
-│  discover   │  Resolve raster source → bbox, CRS, band info
-└──────┬──────┘
-       │
-       ▼
-┌─────────────┐
-│  land_filter │  Intersect raster bbox with land geometry → list of L3 cell IDs
+│  discover   │  Resolve raster → bbox, CRS, band info
+│             │  Intersect bbox L3 cells with static land set → fan-out list
 └──────┬──────┘
        │
        ▼
@@ -227,7 +242,7 @@ JOIN 'h3_stats/raster=flood_30m/period=2025-02/resolution=7/*.parquet' b
   USING (h3_index)
 ```
 
-Per-chunk files are small (~50–100 KB). DuckDB scans glob patterns efficiently. If query performance on many small files becomes an issue, a compaction step can merge chunks into larger regional files — but this is an optimization, not a requirement.
+Per-chunk files are small (~50–100 KB). DuckDB scans glob patterns efficiently. **Compaction is a top priority** — merging per-chunk files into larger regional or global parquet files is essential for production query performance and front-end serving. The parquet schema (columns, types, sort order) will be known ahead of time: a thorough inventory of available data sources, feature engineering decisions, and column mapping will be completed before compute begins. This means file dimensions are close to final from the first run — no ad-hoc column accumulation.
 
 ### 4.3 Materialized Wide Views (Analyst-Defined)
 
@@ -331,7 +346,7 @@ CREATE TABLE dagapp.h3_output_manifest (
 ```
 1. Analyst registers source            →  INSERT into h3_raster_sources or h3_vector_sources
 2. Analyst triggers computation run    →  Freeze config_snapshot, submit DAG job
-3. DAG discover + land_filter          →  Determine L3 chunks
+3. DAG discover (+ static land filter) →  Determine L3 chunks
 4. DAG fan-out produces parquet        →  Workers write to output_prefix
 5. Fan-in writes manifest              →  INSERT into h3_output_manifest
 6. Run marked complete                 →  UPDATE h3_computation_runs SET status = 'completed'
@@ -429,12 +444,11 @@ The H3 pipeline introduces these new handler types for DAG workers:
 
 | Task Type | Input | Output | Description |
 |-----------|-------|--------|-------------|
-| `h3_discover_raster` | STAC URL or blob path | bbox, CRS, band info, file size | Catalog a raster source |
-| `h3_land_filter` | bbox + land geometry | list of L3 cell IDs | Filter H3 grid to land cells |
+| `h3_discover_raster` | STAC URL or blob path | bbox, CRS, band info, L3 cell list | Catalog a raster source + intersect with static land set |
 | `h3_zonal_stats` | raster + L3 cell ID | parquet path | Core zonal stats (mean/sum/median/stdev) |
 | `h3_point_aggregation` | point source + L3 cell ID | parquet path | Aggregate point/polygon features to H3 cells |
 | `h3_weighted_aggregation` | base + weight parquets | parquet path | Weighted combination of H3 datasets |
-| `h3_compaction` | list of chunk parquets | consolidated parquet path | Optional merge for query performance |
+| `h3_compaction` | list of chunk parquets | consolidated parquet path | Merge per-chunk files into production parquet (top priority) |
 
 All task types are idempotent. Rerunning with the same inputs overwrites the same output path.
 
@@ -1025,12 +1039,12 @@ Same computation catalog pattern — registered as a vector source with `geometr
 |-------|------|------------|
 | **P1**: Computation catalog | Pydantic models + repos for `h3_raster_sources`, `h3_vector_sources`, `h3_computation_runs`, `h3_output_manifest` | Existing schema patterns |
 | **P2**: Core zonal stats handler | `h3_zonal_stats` task type in worker, single raster + single L3 cell | Worker framework (done) |
-| **P3**: Raster fan-out workflow | `h3_discover_raster` → `h3_land_filter` → fan-out `h3_zonal_stats` → fan-in + manifest | Fan-out/in (done), P1, P2 |
+| **P3**: Raster fan-out workflow | `h3_discover_raster` (static land filter) → fan-out `h3_zonal_stats` → fan-in + manifest | Fan-out/in (done), P1, P2 |
 | **P4**: Planetary Computer integration | STAC discovery, COG streaming, SAS token signing | P3 |
 | **P5**: Vector point aggregation | `h3_point_aggregation` — Overture places + internal PostGIS (ACLED) | P1, worker framework |
 | **P6**: Vector line aggregation | `h3_line_aggregation` — Overture roads (length by class) | P5 (shares access patterns) |
 | **P7**: Vector polygon aggregation | `h3_polygon_aggregation` + `h3_binary_intersect` — buildings, parks, admin boundaries | P5 |
 | **P8**: Complex aggregation nodes | `h3_weighted_aggregation`, multi-source workflows | P3, P5–P7 |
-| **P9**: Compaction + materialized views | Post-run merge, analyst-defined wide views | P3 |
+| **P9**: Compaction + materialized views | **Top priority** — merge per-chunk parquet into production files, analyst-defined wide views. Schema dimensions known ahead of time (data inventory + feature engineering completed before compute). | P3 |
 | **P10**: Cell connectivity graph | `h3_connectivity` — road crossing detection + edge list output | P6 (road access pattern) |
 | **P11**: Friction surface | Combine connectivity graph + raster terrain stats → travel-cost weights | P10, P3 (DEM stats) |

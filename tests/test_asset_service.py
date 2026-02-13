@@ -582,3 +582,146 @@ class TestQueries:
 
         with pytest.raises(ValueError, match="not found"):
             asyncio.run(svc.soft_delete_asset("nonexistent", "admin"))
+
+
+# ============================================================================
+# B2B LIFECYCLE (end-to-end service-level chain)
+# ============================================================================
+
+class TestB2BLifecycle:
+    """
+    Tests the full B2B lifecycle chain at the service level:
+    submit (with correlation_id) → processing callback → approve.
+
+    Verifies that identity threading (correlation_id, asset_id) and
+    state transitions work correctly across the complete flow.
+    """
+
+    def test_submit_complete_approve_lifecycle(self):
+        """Full chain: submit → processing complete → approve version."""
+        svc = _build_service()
+        platform = _make_platform()
+        job = _make_job("job-lifecycle")
+
+        svc.platform_repo.get = AsyncMock(return_value=platform)
+        svc.asset_repo.get_or_create = AsyncMock(
+            side_effect=lambda shell: (shell, True)
+        )
+        svc.version_repo.has_unresolved_versions = AsyncMock(return_value=False)
+        svc.version_repo.get_next_ordinal = AsyncMock(return_value=0)
+        svc.version_repo.create = AsyncMock(side_effect=lambda v: v)
+        svc.version_repo.update = AsyncMock(return_value=True)
+        svc.job_service.create_job = AsyncMock(return_value=job)
+
+        # Step 1: Submit
+        asset, version, returned_job = asyncio.run(
+            svc.submit_asset(
+                platform_id="ddh",
+                platform_refs={"dataset_id": "d1", "resource_id": "r1"},
+                data_type="raster",
+                version_label="V1",
+                workflow_id="raster_ingest",
+                input_params={"blob_path": "bronze/test.tif"},
+                correlation_id="req-B2B-001",
+            )
+        )
+
+        # Verify identity threading
+        call_kwargs = svc.job_service.create_job.call_args.kwargs
+        assert call_kwargs["correlation_id"] == "req-B2B-001"
+        assert call_kwargs["asset_id"] == asset.asset_id
+        assert len(call_kwargs["asset_id"]) == 32
+        assert version.processing_state == ProcessingStatus.PROCESSING
+        assert version.current_job_id == "job-lifecycle"
+
+        # Step 2: Processing completed callback
+        svc.version_repo.get_by_job_id = AsyncMock(return_value=version)
+        completed = asyncio.run(
+            svc.on_processing_completed(
+                job_id="job-lifecycle",
+                artifacts={"blob_path": "silver/output.tif"},
+            )
+        )
+
+        assert completed.processing_state == ProcessingStatus.COMPLETED
+        assert completed.blob_path == "silver/output.tif"
+
+        # Step 3: Approve version
+        svc.version_repo.get = AsyncMock(return_value=version)
+        approved = asyncio.run(
+            svc.approve_version(asset.asset_id, 0, "analyst@gov")
+        )
+
+        assert approved.approval_state == ApprovalState.APPROVED
+        assert approved.reviewer == "analyst@gov"
+
+    def test_submit_fail_reprocess_lifecycle(self):
+        """Full chain: submit → processing fail → reprocess → complete."""
+        svc = _build_service()
+        platform = _make_platform()
+        job1 = _make_job("job-fail")
+        job2 = _make_job("job-retry")
+
+        svc.platform_repo.get = AsyncMock(return_value=platform)
+        svc.asset_repo.get_or_create = AsyncMock(
+            side_effect=lambda shell: (shell, True)
+        )
+        svc.version_repo.has_unresolved_versions = AsyncMock(return_value=False)
+        svc.version_repo.get_next_ordinal = AsyncMock(return_value=0)
+        svc.version_repo.create = AsyncMock(side_effect=lambda v: v)
+        svc.version_repo.update = AsyncMock(return_value=True)
+        svc.job_service.create_job = AsyncMock(return_value=job1)
+
+        # Step 1: Submit
+        asset, version, _ = asyncio.run(
+            svc.submit_asset(
+                platform_id="ddh",
+                platform_refs={"dataset_id": "d1", "resource_id": "r1"},
+                data_type="raster",
+                version_label="V1",
+                workflow_id="raster_ingest",
+                input_params={"blob_path": "bronze/test.tif"},
+                correlation_id="req-B2B-002",
+            )
+        )
+
+        # Step 2: Processing failed callback
+        svc.version_repo.get_by_job_id = AsyncMock(return_value=version)
+        failed = asyncio.run(
+            svc.on_processing_failed(
+                job_id="job-fail",
+                error_message="GDAL: unsupported format",
+            )
+        )
+
+        assert failed.processing_state == ProcessingStatus.FAILED
+        assert failed.last_error == "GDAL: unsupported format"
+
+        # Step 3: Reprocess
+        svc.version_repo.get = AsyncMock(return_value=version)
+        svc.job_service.create_job = AsyncMock(return_value=job2)
+
+        reprocessed, retry_job = asyncio.run(
+            svc.reprocess_version(
+                asset.asset_id, 0, "raster_ingest",
+                {"blob_path": "bronze/test_fixed.tif"},
+            )
+        )
+
+        assert reprocessed.revision == 1
+        assert reprocessed.current_job_id == "job-retry"
+        assert reprocessed.processing_state == ProcessingStatus.PROCESSING
+        assert retry_job.job_id == "job-retry"
+
+        # Step 4: Second attempt completes
+        svc.version_repo.get_by_job_id = AsyncMock(return_value=reprocessed)
+        completed = asyncio.run(
+            svc.on_processing_completed(
+                job_id="job-retry",
+                artifacts={"blob_path": "silver/output_v2.tif"},
+            )
+        )
+
+        assert completed.processing_state == ProcessingStatus.COMPLETED
+        assert completed.blob_path == "silver/output_v2.tif"
+        assert completed.revision == 1

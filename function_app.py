@@ -162,6 +162,11 @@ if STARTUP_STATE.all_passed:
     app.register_functions(platform_bp)
     logger.info("  Registered: platform_bp (B2B submit/status)")
 
+    # Metadata blueprint (layer metadata admin)
+    from function.blueprints.metadata_bp import metadata_bp
+    app.register_functions(metadata_bp)
+    logger.info("  Registered: metadata_bp (layer metadata admin)")
+
     logger.info("=" * 60)
     logger.info("RMHDAGMASTER Gateway Function App Ready")
     logger.info("=" * 60)

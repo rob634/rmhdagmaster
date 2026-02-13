@@ -30,6 +30,7 @@ from .checkpoint_repo import CheckpointRepository
 from .platform_repo import PlatformRepository
 from .asset_repo import AssetRepository
 from .version_repo import AssetVersionRepository
+from .metadata_repo import LayerMetadataRepository
 
 __all__ = [
     "get_pool",
@@ -44,4 +45,5 @@ __all__ = [
     "PlatformRepository",
     "AssetRepository",
     "AssetVersionRepository",
+    "LayerMetadataRepository",
 ]

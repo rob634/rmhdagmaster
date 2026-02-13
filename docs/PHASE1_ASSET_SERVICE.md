@@ -1,7 +1,7 @@
 # Phase 1: GeospatialAssetService — Implementation Plan
 
 **Created**: 09 FEB 2026
-**Status**: Phase 4A + 4B COMPLETE (11 FEB 2026) — Phase 4C next
+**Status**: Phase 4A + 4B + 4C ALL COMPLETE (12 FEB 2026)
 **Tracks**: Tier 4 domain service layer
 
 ---
@@ -43,12 +43,13 @@ GeospatialAssetService
 | 3 | `services/__init__.py` | Export GeospatialAssetService |
 | 4 | `repositories/version_repo.py` | Add `get_by_job_id()` method |
 
-### Wiring (deferred — no changes now)
+### Wiring (ALL DONE)
 
-| File | Change | When |
-|------|--------|------|
-| `main.py` | Instantiate service, inject into routes | Phase 2 (REST API) |
-| `orchestrator/loop.py` | Call `on_processing_*` callbacks | Phase 3 (DAG wiring) |
+| File | Change | Status |
+|------|--------|--------|
+| `main.py` | Instantiate service, inject into Orchestrator + domain routes | DONE |
+| `orchestrator/loop.py` | Call `on_processing_*` callbacks in `_check_job_completion()` | DONE |
+| `api/domain_routes.py` | HTTP endpoints for domain mutations | DONE |
 
 ---
 
@@ -140,9 +141,10 @@ All 24 planned test cases implemented: submit (6), callbacks (4), approval (4), 
 
 ## Verification -- PASSED
 
-1. `pytest tests/test_asset_service.py -v` — 24 tests pass
-2. `pytest tests/ -v` — 158 tests pass (134 existing + 24 new)
-3. No changes to main.py; orchestrator only changed to pass `asset_id` through job creation path
+1. `pytest tests/test_asset_service.py -v` — 28 tests pass (24 original + 2 B2B lifecycle + 2 reprocessing)
+2. `pytest tests/ --ignore=tests/test_domain_routes.py -v` — 175 tests pass
+3. `tests/test_domain_routes.py` — 17 endpoint tests + 4 callback wiring tests (requires FastAPI, runs in Docker only)
+4. Gateway deployed v0.17.0, orchestrator + worker verified in Azure
 
 ---
 
@@ -179,34 +181,33 @@ All 24 planned test cases implemented: submit (6), callbacks (4), approval (4), 
 
 ---
 
-## Phase 4C: DAG Callback Wiring -- NOT STARTED
+## Phase 4C: DAG Callback Wiring -- DONE (12 FEB 2026)
 
 ### What It Does
 
 When a DAG job completes or fails, the orchestrator calls `asset_service.on_processing_completed/failed` to update the asset version with artifacts or error state.
 
-### Hook Point
+### Implementation
 
-`orchestrator/loop.py:_check_job_completion()` (line ~1198):
+`orchestrator/loop.py:_check_job_completion()`:
 
 ```
 COMPLETED → asset_service.on_processing_completed(job_id, result_data)
 FAILED    → asset_service.on_processing_failed(job_id, error_message)
 ```
 
-The service methods already exist and are tested. The wiring requires:
+- `Orchestrator.__init__()` accepts optional `asset_service` parameter
+- `main.py` creates `GeospatialAssetService(pool, job_service, event_service)` and passes it
+- Callback errors are logged but swallowed — don't block job completion
+- Standalone jobs (no asset_id) return None silently (no-op)
 
-1. Instantiate `GeospatialAssetService` in the Orchestrator constructor (needs pool + job_service)
-2. After `job_service.complete_job()` → call `asset_service.on_processing_completed(job.job_id, result_data)`
-3. After `job_service.fail_job()` → call `asset_service.on_processing_failed(job.job_id, error)`
-4. Both return `Optional[AssetVersion]` — None for standalone jobs (no-op, no crash)
-
-### Files to Modify (2)
+### Files Modified
 
 | File | Change |
 |------|--------|
-| `orchestrator/loop.py` | Import + instantiate GeospatialAssetService; call callbacks in `_check_job_completion()` |
-| `tests/test_integration.py` | Add test for callback wiring (mock asset_service, verify calls) |
+| `orchestrator/loop.py` | Added `asset_service` param, wired callbacks in `_check_job_completion()` |
+| `main.py` | Instantiates GeospatialAssetService, passes to Orchestrator + domain routes |
+| `tests/test_domain_routes.py` | 4 callback wiring tests (completed, failed, standalone, error resilience) |
 
 ---
 
@@ -217,5 +218,7 @@ The service methods already exist and are tested. The wiring requires:
 | Service takes `JobService` not `JobRepository` | Job creation is multi-step (creates nodes, emits events) — reuse existing logic |
 | Processing callbacks return `Optional` | Not all DAG jobs are tied to assets (standalone jobs still work) |
 | Model validates state transitions | Service just calls model methods; ValueError bubbles up naturally |
-| No main.py wiring yet | Service is testable standalone; wiring happens in Phase 2 (API) and Phase 3 (DAG callbacks) |
+| Callback errors swallowed | Asset state update failure should not prevent job completion |
 | `get_by_job_id` on version repo | Only way to find which version a DAG job belongs to when processing completes |
+| `correlation_id` = B2B `request_id` | Gateway maps `request_id` → `correlation_id` on the job; B2B polls by `request_id` |
+| `asset_id` = deterministic hash | `SHA256(platform_id + sorted(platform_refs))[:32]` — same refs always produce same asset |

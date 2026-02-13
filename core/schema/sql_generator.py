@@ -427,6 +427,7 @@ END$$
         from core.models import (
             Job, NodeState, JobEvent, Checkpoint, OrchestratorLease,
             Platform, GeospatialAsset, AssetVersion,
+            LayerMetadata, LayerCatalog,
         )
         from core.models.task import TaskResult
         from core.contracts import (
@@ -469,10 +470,12 @@ END$$
         statements.append(self.generate_table(Checkpoint))
         statements.append(self.generate_table(OrchestratorLease))
 
-        # Domain model tables (dependency order: Platform → GeospatialAsset → AssetVersion)
+        # Domain model tables (dependency order: Platform → GeospatialAsset → AssetVersion → LayerMetadata)
         statements.append(self.generate_table(Platform))
         statements.append(self.generate_table(GeospatialAsset))
         statements.append(self.generate_table(AssetVersion))
+        statements.append(self.generate_table(LayerMetadata))
+        statements.append(self.generate_table(LayerCatalog))
 
         # Generate indexes — execution tables
         statements.extend(self.generate_indexes(Job))
@@ -486,6 +489,8 @@ END$$
         statements.extend(self.generate_indexes(Platform))
         statements.extend(self.generate_indexes(GeospatialAsset))
         statements.extend(self.generate_indexes(AssetVersion))
+        statements.extend(self.generate_indexes(LayerMetadata))
+        statements.extend(self.generate_indexes(LayerCatalog))
 
         # Generate updated_at triggers
         statements.append(TriggerBuilder.updated_at_function(self.schema_name))
@@ -494,6 +499,7 @@ END$$
         statements.extend(TriggerBuilder.updated_at_trigger(self.schema_name, "platforms"))
         statements.extend(TriggerBuilder.updated_at_trigger(self.schema_name, "geospatial_assets"))
         statements.extend(TriggerBuilder.updated_at_trigger(self.schema_name, "asset_versions"))
+        statements.extend(TriggerBuilder.updated_at_trigger(self.schema_name, "layer_metadata"))
 
         logger.info(f"Generated {len(statements)} DDL statements for schema {self.schema_name}")
         return statements

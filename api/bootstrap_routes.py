@@ -509,3 +509,116 @@ async def rebuild_schema(
     except Exception as e:
         logger.error(f"REBUILD: Unexpected error: {e}")
         raise HTTPException(500, f"Rebuild failed: {e}")
+
+
+# ============================================================================
+# PLATFORM SEED
+# ============================================================================
+
+# Default platform registrations.
+# These are the B2B platforms the system knows about.
+# Platforms are reference data — they define what identity fields
+# each B2B application must provide when submitting assets.
+DEFAULT_PLATFORMS = [
+    {
+        "platform_id": "ddh",
+        "display_name": "Data Distribution Hub",
+        "description": "DDH geospatial data platform",
+        "required_refs": ["dataset_id", "resource_id"],
+        "optional_refs": [],
+    },
+    {
+        "platform_id": "arcgis",
+        "display_name": "ArcGIS Online",
+        "description": "Esri ArcGIS Online hosted layers",
+        "required_refs": ["item_id", "layer_index"],
+        "optional_refs": [],
+    },
+    {
+        "platform_id": "geonode",
+        "display_name": "GeoNode",
+        "description": "GeoNode open-source SDI",
+        "required_refs": ["uuid"],
+        "optional_refs": [],
+    },
+]
+
+
+@router.post("/seed-platforms")
+async def seed_platforms(
+    confirm: str = Query(None, description="Must be 'yes' to execute"),
+):
+    """
+    Seed the platforms table with default B2B platform registrations.
+
+    Idempotent: uses INSERT ON CONFLICT DO NOTHING. Safe to run repeatedly.
+
+    Platforms define what identity fields each B2B application must provide
+    when submitting assets. Without platform records, asset submission fails.
+
+    Default platforms: ddh, arcgis, geonode.
+    """
+    if confirm != "yes":
+        return JSONResponse(
+            status_code=400,
+            content={
+                "error": "Confirmation required",
+                "message": "Add ?confirm=yes to execute",
+                "example": "POST /api/v1/bootstrap/seed-platforms?confirm=yes",
+                "platforms": [p["platform_id"] for p in DEFAULT_PLATFORMS],
+            }
+        )
+
+    try:
+        from infrastructure.postgresql import AsyncPostgreSQLRepository
+        from psycopg.types.json import Json
+
+        repo = AsyncPostgreSQLRepository(schema_name="dagapp")
+
+        seeded = []
+        skipped = []
+        errors = []
+
+        async with repo.get_connection() as conn:
+            for p in DEFAULT_PLATFORMS:
+                try:
+                    result = await conn.execute(
+                        """
+                        INSERT INTO dagapp.platforms (
+                            platform_id, display_name, description,
+                            required_refs, optional_refs, is_active,
+                            created_at, updated_at
+                        ) VALUES (
+                            %(platform_id)s, %(display_name)s, %(description)s,
+                            %(required_refs)s, %(optional_refs)s, true,
+                            NOW(), NOW()
+                        )
+                        ON CONFLICT (platform_id) DO NOTHING
+                        """,
+                        {
+                            "platform_id": p["platform_id"],
+                            "display_name": p["display_name"],
+                            "description": p["description"],
+                            "required_refs": Json(p["required_refs"]),
+                            "optional_refs": Json(p["optional_refs"]),
+                        },
+                    )
+                    if result.rowcount > 0:
+                        seeded.append(p["platform_id"])
+                        logger.info(f"Seeded platform: {p['platform_id']}")
+                    else:
+                        skipped.append(p["platform_id"])
+                except Exception as e:
+                    errors.append({"platform_id": p["platform_id"], "error": str(e)})
+                    logger.error(f"Failed to seed platform {p['platform_id']}: {e}")
+
+        return JSONResponse(content={
+            "status": "completed",
+            "seeded": seeded,
+            "skipped_existing": skipped,
+            "errors": errors,
+        })
+
+    except Exception as e:
+        logger.error(f"Platform seeding failed: {e}")
+        raise HTTPException(500, f"Seeding failed: {e}")

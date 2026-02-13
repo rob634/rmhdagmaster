@@ -25,6 +25,7 @@ from .workflow_service import WorkflowService
 from .event_service import EventService
 from .checkpoint_service import CheckpointService
 from .asset_service import GeospatialAssetService
+from .metadata_service import MetadataService
 
 __all__ = [
     "JobService",
@@ -33,4 +34,5 @@ __all__ = [
     "EventService",
     "CheckpointService",
     "GeospatialAssetService",
+    "MetadataService",
 ]
