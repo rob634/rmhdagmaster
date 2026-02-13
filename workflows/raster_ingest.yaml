@@ -1,100 +1,229 @@
 # ============================================================================
-# RASTER INGEST WORKFLOW
+# RASTER INGEST WORKFLOW (R1 - Linear)
 # ============================================================================
-# A multi-stage workflow for ingesting raster data.
+# EPOCH: 5 - DAG ORCHESTRATION
+# STATUS: Workflow Definition - Phase R1
+# PURPOSE: Simple linear raster ingest: blob → validate → COG → STAC
+# CREATED: 31 JAN 2026
+# LAST_REVIEWED: 13 FEB 2026
+# ============================================================================
 #
 # Flow:
-#   START -> validate_raster -> generate_cog -> upload_blob -> publish_stac -> END
+#   START → blob_to_mount → validate → create_cog
+#         → stac_ensure_collection → stac_register_item → END
 #
-# Each node passes its output to the next node via the orchestrator.
+# Design premise: Workers have limited RAM and 100TB Azure Files mount.
+# All processing is disk-based — blob_to_mount stages the file first.
+#
+# For the conditional/tiling version, see raster_process.yaml (Phase R2).
 # ============================================================================
 
 workflow_id: raster_ingest
 name: Raster Ingest Pipeline
-version: 1
-description: Ingest raster data - validate, convert to COG, upload, publish to STAC
+version: 2
+description: |
+  Linear raster ingest pipeline (Phase R1).
+  Copies source blob to mounted storage, validates, creates COG,
+  and registers to STAC catalog. No conditional routing or tiling —
+  see raster_process.yaml for the full DAG version.
+
+# ============================================================================
+# INPUT PARAMETERS
+# ============================================================================
 
 inputs:
-  source_path:
+  # Required
+  blob_name:
     type: string
     required: true
-    description: Path to source raster file (blob storage path)
+    description: Source raster blob path (e.g., "uploads/raster.tif")
+
+  container_name:
+    type: string
+    required: true
+    description: Source blob container (e.g., "rmhazuregeobronze")
+
   collection_id:
     type: string
     required: true
     description: Target STAC collection ID
-  asset_id:
+
+  # Optional — CRS
+  input_crs:
     type: string
     required: false
-    description: Optional asset ID (generated if not provided)
+    description: CRS override if source file lacks CRS metadata (e.g., "EPSG:4326")
+
+  target_crs:
+    type: string
+    required: false
+    default: "EPSG:4326"
+    description: Target CRS for reprojection
+
+  # Optional — processing
+  raster_type:
+    type: string
+    required: false
+    default: "auto"
+    description: Type hint (auto, rgb, rgba, dem, categorical, multispectral)
+
+  output_tier:
+    type: string
+    required: false
+    default: "analysis"
+    description: COG tier (visualization, analysis, archive)
+
+  output_folder:
+    type: string
+    required: false
+    description: Optional subfolder in silver-cogs container
+
+  # Optional — STAC metadata
+  item_id:
+    type: string
+    required: false
+    description: Custom STAC item ID (auto-generated from filename if omitted)
+
+  title:
+    type: string
+    required: false
+    description: Human-readable title for STAC item
+
+  # Optional — platform integration (passthrough to STAC)
+  dataset_id:
+    type: string
+    required: false
+    description: DDH dataset ID
+
+  access_level:
+    type: string
+    required: false
+    description: DDH access level
+
+# ============================================================================
+# WORKFLOW NODES
+# ============================================================================
 
 nodes:
-  # Entry point
-  start:
+  # --------------------------------------------------------------------------
+  # START
+  # --------------------------------------------------------------------------
+  START:
     type: start
-    description: Workflow entry point
+    next: copy_to_mount
+
+  # --------------------------------------------------------------------------
+  # NODE A: Copy blob to mounted Azure Files storage
+  # --------------------------------------------------------------------------
+  # Streams blob to /mnt/etl/input/ for disk-based GDAL processing.
+  # This is always the first step — workers have limited RAM.
+  copy_to_mount:
+    type: task
+    handler: raster.blob_to_mount
+    queue: container-tasks
+    timeout_seconds: 1800
+    retry:
+      max_attempts: 3
+      backoff: exponential
+      initial_delay_seconds: 10
+      max_delay_seconds: 300
+    params:
+      blob_name: "{{ inputs.blob_name }}"
+      container_name: "{{ inputs.container_name }}"
     next: validate_raster
 
-  # Stage 1: Validate the input raster
+  # --------------------------------------------------------------------------
+  # NODE B: Validate raster
+  # --------------------------------------------------------------------------
+  # Opens local file, checks CRS, bit depth, detects type, selects
+  # compression profile. Fast on local disk (metadata-only read).
   validate_raster:
     type: task
-    handler: raster_validate
-    description: Validate raster file format and metadata
-    params:
-      source_path: "{{ inputs.source_path }}"
+    handler: raster.validate
+    queue: container-tasks
     timeout_seconds: 300
     retry:
       max_attempts: 2
       backoff: fixed
       initial_delay_seconds: 10
-    next: generate_cog
-
-  # Stage 2: Convert to Cloud-Optimized GeoTIFF
-  generate_cog:
-    type: task
-    handler: raster_cog_docker
-    description: Convert raster to COG format
-    queue: docker-worker-tasks
     params:
-      source_path: "{{ inputs.source_path }}"
-    timeout_seconds: 3600
+      local_path: "{{ nodes.copy_to_mount.output.local_path }}"
+      input_crs: "{{ inputs.input_crs | default('', true) }}"
+      raster_type: "{{ inputs.raster_type | default('auto', true) }}"
+      output_tier: "{{ inputs.output_tier | default('analysis', true) }}"
+    next: create_cog
+
+  # --------------------------------------------------------------------------
+  # NODE D+E: Create Cloud-Optimized GeoTIFF
+  # --------------------------------------------------------------------------
+  # Reads local file, reprojects + compresses via rio-cogeo, uploads
+  # resulting COG to silver-cogs blob container.
+  create_cog:
+    type: task
+    handler: raster.create_cog
+    queue: container-tasks
+    timeout_seconds: 7200
     retry:
-      max_attempts: 3
+      max_attempts: 2
       backoff: exponential
       initial_delay_seconds: 30
       max_delay_seconds: 300
-    next: upload_blob
-
-  # Stage 3: Upload to blob storage
-  upload_blob:
-    type: task
-    handler: blob_upload
-    description: Upload COG to destination blob storage
     params:
-      collection_id: "{{ inputs.collection_id }}"
-    timeout_seconds: 600
-    retry:
-      max_attempts: 3
-      backoff: exponential
-      initial_delay_seconds: 10
-    next: publish_stac
+      local_path: "{{ nodes.copy_to_mount.output.local_path }}"
+      validation: "{{ nodes.validate_raster.output }}"
+      target_crs: "{{ inputs.target_crs | default('EPSG:4326', true) }}"
+      output_tier: "{{ inputs.output_tier | default('analysis', true) }}"
+      output_folder: "{{ inputs.output_folder | default('', true) }}"
+    next: ensure_collection
 
-  # Stage 4: Publish to STAC catalog
-  publish_stac:
+  # --------------------------------------------------------------------------
+  # NODE F.1: Ensure STAC collection exists
+  # --------------------------------------------------------------------------
+  # Idempotent — creates collection if missing, updates if exists.
+  ensure_collection:
     type: task
-    handler: stac_publish
-    description: Create STAC item and publish to catalog
-    params:
-      collection_id: "{{ inputs.collection_id }}"
-      asset_id: "{{ inputs.asset_id }}"
+    handler: raster.stac_ensure_collection
+    queue: container-tasks
     timeout_seconds: 300
     retry:
       max_attempts: 3
       backoff: fixed
       initial_delay_seconds: 5
-    next: end
+    params:
+      collection_id: "{{ inputs.collection_id }}"
+      title: "{{ inputs.title | default('', true) }}"
+      bounds: "{{ nodes.validate_raster.output.bounds }}"
+      dataset_id: "{{ inputs.dataset_id | default('', true) }}"
+      access_level: "{{ inputs.access_level | default('', true) }}"
+    next: register_stac_item
 
-  # Exit point
-  end:
+  # --------------------------------------------------------------------------
+  # NODE F.2: Register STAC item
+  # --------------------------------------------------------------------------
+  # Creates STAC item pointing to the COG in silver-cogs, registers
+  # pgSTAC search for TiTiler mosaic access.
+  register_stac_item:
+    type: task
+    handler: raster.stac_register_item
+    queue: container-tasks
+    timeout_seconds: 300
+    retry:
+      max_attempts: 3
+      backoff: fixed
+      initial_delay_seconds: 5
+    params:
+      cog_blob: "{{ nodes.create_cog.output.cog_blob }}"
+      cog_container: "{{ nodes.create_cog.output.cog_container }}"
+      validation: "{{ nodes.validate_raster.output }}"
+      collection_id: "{{ inputs.collection_id }}"
+      item_id: "{{ inputs.item_id | default('', true) }}"
+      title: "{{ inputs.title | default('', true) }}"
+      dataset_id: "{{ inputs.dataset_id | default('', true) }}"
+      access_level: "{{ inputs.access_level | default('', true) }}"
+    next: END
+
+  # --------------------------------------------------------------------------
+  # END
+  # --------------------------------------------------------------------------
+  END:
     type: end
-    description: Workflow complete

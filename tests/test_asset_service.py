@@ -30,6 +30,19 @@ from services.asset_service import GeospatialAssetService
 
 
 # ============================================================================
+# FIXTURES
+# ============================================================================
+
+@pytest.fixture(autouse=True)
+def _disable_preflight(monkeypatch):
+    """Disable pre-flight validation in asset service tests (tested in test_preflight.py)."""
+    monkeypatch.setattr(
+        'services.asset_service.get_preflight_validator',
+        lambda *a, **kw: None,
+    )
+
+
+# ============================================================================
 # HELPERS
 # ============================================================================
 

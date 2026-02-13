@@ -33,6 +33,7 @@ from core.models.geospatial_asset import GeospatialAsset
 from core.models.asset_version import AssetVersion
 from core.contracts import ApprovalState, ProcessingStatus
 from repositories import PlatformRepository, AssetRepository, AssetVersionRepository
+from services.preflight import get_preflight_validator
 
 logger = get_logger(__name__)
 
@@ -45,6 +46,7 @@ class GeospatialAssetService:
         pool: AsyncConnectionPool,
         job_service: "JobService",
         event_service: "EventService" = None,
+        blob_repo=None,
     ):
         self.pool = pool
         self.platform_repo = PlatformRepository(pool)
@@ -52,6 +54,7 @@ class GeospatialAssetService:
         self.version_repo = AssetVersionRepository(pool)
         self.job_service = job_service
         self._event_service = event_service
+        self._blob_repo = blob_repo
 
     # ================================================================
     # SUBMIT
@@ -78,6 +81,20 @@ class GeospatialAssetService:
             ValueError: Platform not found, inactive, missing refs, or unresolved version.
             KeyError: Workflow not found (from JobService).
         """
+        # 0. Pre-flight validation (cheap checks before job creation)
+        validator = get_preflight_validator(
+            workflow_id, self.pool, blob_repo=self._blob_repo,
+        )
+        if validator is not None:
+            preflight = await validator.validate(
+                input_params, correlation_id=correlation_id,
+            )
+            if not preflight.valid:
+                raise ValueError(
+                    f"Pre-flight validation failed: "
+                    f"{'; '.join(preflight.errors)}"
+                )
+
         # 1. Validate platform
         platform = await self.platform_repo.get(platform_id)
         if platform is None:

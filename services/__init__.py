@@ -26,6 +26,12 @@ from .event_service import EventService
 from .checkpoint_service import CheckpointService
 from .asset_service import GeospatialAssetService
 from .metadata_service import MetadataService
+from .preflight import (
+    PreflightResult,
+    PreflightValidator,
+    RasterPreflightValidator,
+    get_preflight_validator,
+)
 
 __all__ = [
     "JobService",
@@ -35,4 +41,8 @@ __all__ = [
     "CheckpointService",
     "GeospatialAssetService",
     "MetadataService",
+    "PreflightResult",
+    "PreflightValidator",
+    "RasterPreflightValidator",
+    "get_preflight_validator",
 ]

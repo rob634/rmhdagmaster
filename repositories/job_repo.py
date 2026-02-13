@@ -596,6 +596,41 @@ class JobRepository:
 
             return self._row_to_job(row)
 
+    async def get_by_correlation_id(
+        self,
+        correlation_id: str,
+    ) -> Optional[Job]:
+        """
+        Get the most recent job for a correlation_id.
+
+        Used by pre-flight validation to detect duplicate submissions.
+        Returns the most recent job (by created_at) so the caller can
+        check if it's still active (non-terminal).
+
+        Args:
+            correlation_id: The B2B request_id mapped to correlation_id
+
+        Returns:
+            Most recent Job with this correlation_id, or None
+        """
+        async with self.pool.connection() as conn:
+            conn.row_factory = dict_row
+            result = await conn.execute(
+                sql.SQL("""
+                SELECT * FROM {}
+                WHERE correlation_id = %(correlation_id)s
+                ORDER BY created_at DESC
+                LIMIT 1
+                """).format(TABLE_JOBS),
+                {"correlation_id": correlation_id},
+            )
+            row = await result.fetchone()
+
+            if row is None:
+                return None
+
+            return self._row_to_job(row)
+
     async def release_ownership(self, job_id: str, owner_id: str) -> bool:
         """
         Release ownership of a job (on graceful shutdown or job completion).

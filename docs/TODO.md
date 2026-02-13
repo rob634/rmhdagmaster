@@ -1,6 +1,6 @@
 # TODO - rmhdagmaster
 
-**Last Updated**: 13 FEB 2026 (Phase 4D complete, pivot to Raster ETL)
+**Last Updated**: 13 FEB 2026 (Raster ETL design — pre-flight validation + workflow YAML fixes)
 
 > Detailed specs, code examples, and task checklists: see `IMPLEMENTATION.md`.
 > System design and architecture: see `ARCHITECTURE.md`.
@@ -152,7 +152,9 @@ GeospatialAssetService: submit, approve, reject, clearance, reprocess, callbacks
 
 Build a working end-to-end raster ingest workflow that produces real COG outputs and STAC catalog entries.
 
-**Strategy**: Linear pipeline first → prove the engine works → then add conditional routing and tiling to leverage the DAG.
+**Strategy**: Pre-flight validation first → linear pipeline → prove the engine works → then add conditional routing and tiling to leverage the DAG.
+
+**Design premise**: Workers have extremely limited RAM and 100TB of Azure File Storage. GDAL prefers filesystem I/O. **All raster workflows begin with `blob_to_mount`** — no in-memory processing path. This is simpler (one code path), faster for real workloads, and eliminates GDAL remote I/O bugs. Even a 5MB GeoTIFF benefits from disk-based processing because `cog_translate` uses temporary files for overviews regardless.
 
 #### Existing Handlers (already built, in `handlers/raster/`)
 
@@ -167,43 +169,172 @@ Build a working end-to-end raster ingest workflow that produces real COG outputs
 | `raster.stac_register_item` | Register single COG to STAC | Built |
 | `raster.stac_register_items` | Register multiple tiled COGs to STAC | Built |
 
-#### Phase R1: Simple Linear Workflow (NEXT)
+#### Workflow YAML Status
 
-Create a static, linear workflow that exercises the core pipeline end-to-end:
+| File | Purpose | Status |
+|------|---------|--------|
+| `raster_ingest.yaml` | R1 — linear pipeline (v2) | **Done** (13 FEB) — correct handler names, template wiring, blob_to_mount first |
+| `raster_process.yaml` | R2 — conditional tiling pipeline | Exists, correct handler names, needs `\| default()` on optional params |
+| `raster_processing.yaml` | ~~R2 duplicate~~ | **Deleted** (13 FEB) — broken, redundant with `raster_process.yaml` |
+| `raster_validate_test.yaml` | Single-node test (validate only) | Working, verified E2E |
+
+---
+
+#### Two-Stage Validation Architecture
+
+Validation is split into two stages with different concerns, cost, and timing:
+
+**Stage 1 — Pre-flight (synchronous, at submit time, no file loading)**
+
+Runs in the orchestrator submit path BEFORE job creation. All checks are cheap (parameter validation, DB reads, blob HEAD requests). Reject here = instant HTTP 400/409, no resources wasted.
+
+| Check | What It Does | Universal? |
+|-------|-------------|------------|
+| Required params present | `blob_name`, `container_name`, `collection_id` etc. | Yes |
+| Blob exists | HEAD request via BlobRepository — milliseconds | Yes |
+| Container valid | Known container name | Yes |
+| File extension plausible | `.tif`, `.tiff` for raster; `.gpkg`, `.geojson` for vector | Per-workflow |
+| Idempotency | Same `correlation_id` / `asset_id` already submitted? | Yes |
+| Enum params valid | `raster_type` in {auto,rgb,dem,...}, `output_tier` in {viz,analysis,archive} | Per-workflow |
+| CRS format valid | `EPSG:NNNN` pattern check (no GDAL needed) | Per-workflow |
+
+**Stage 2 — ETL validation (async, on worker, file loaded with GDAL)**
+
+The `raster.validate` handler runs after `blob_to_mount` in the workflow. Requires GDAL/rasterio on the heavy worker image. Reject here = job FAILED with diagnostic error message.
+
+| Check | What It Does |
+|-------|-------------|
+| GDAL can open file | Catches corrupt files, truncated uploads |
+| CRS present / matches override | 4-scenario matrix (file has/lacks CRS × user provides/omits) |
+| Bit depth acceptable | Reject float64, complex types |
+| Raster type detection | RGB, DEM, categorical, multispectral — from band count + dtype |
+| Compression profile selection | Type-specific settings for COG creation |
+| Compressed size estimation | For tiling decision in R2 |
+
+##### Pre-flight Validator Design
+
+**Pattern**: ABC with shared universal checks + one abstract method for workflow-specific checks. Shallow hierarchy (1 level). ClassVars for declarative configuration (same pattern as Pydantic `__sql_*` metadata).
 
 ```
-START → validate → create_cog → stac_ensure_collection → stac_register_item → END
+PreflightValidator (ABC)
+│
+│  Universal checks (always run):
+│  ├── _check_required_params()    — REQUIRED_PARAMS ClassVar
+│  ├── _check_blob_exists()        — HEAD request via BlobRepository
+│  ├── _check_file_extension()     — VALID_EXTENSIONS ClassVar
+│  └── _check_idempotency()        — DB read on correlation_id / asset_id
+│
+│  Abstract (subclass overrides):
+│  └── _validate_workflow_specific() → PreflightResult
+│
+├── RasterPreflightValidator
+│     REQUIRED_PARAMS = ["blob_name", "container_name", "collection_id"]
+│     VALID_EXTENSIONS = [".tif", ".tiff", ".geotiff", ".img", ".vrt"]
+│     _validate_workflow_specific():
+│       ├── raster_type enum check
+│       ├── output_tier enum check
+│       └── target_crs format check
+│
+└── VectorPreflightValidator (future)
+      REQUIRED_PARAMS = ["blob_name", "container_name", "collection_id"]
+      VALID_EXTENSIONS = [".gpkg", ".shp", ".geojson", ".fgb"]
+      _validate_workflow_specific():
+        ├── geometry_type check
+        └── target_srid check
+```
+
+**Key design decisions**:
+
+| Decision | Rationale |
+|----------|-----------|
+| ABC + subclass (not composition) | Hierarchy is shallow (1 level, 2-3 leaves). Universal checks are substantial shared behavior, not just interface. No diamond problem risk. |
+| ClassVars for REQUIRED_PARAMS, VALID_EXTENSIONS | Subclass declares data, base class enforces logic. Same convention as `__sql_table__` on Pydantic models. |
+| PreflightResult collects all errors | Report all 3 problems at once, not fail on first and make caller fix one at a time. |
+| Runs in submit path, not as workflow node | Whole point is to fail BEFORE burning a job, queue message, and worker pickup cycle. |
+| Dispatched by workflow_id | `submit_asset()` selects the right validator subclass based on which workflow is being submitted. |
+
+**Files**:
+
+| File | Purpose |
+|------|---------|
+| `services/preflight.py` | `PreflightValidator` ABC + `RasterPreflightValidator` + `PreflightResult` |
+| `tests/test_preflight.py` | Unit tests (mocked repos) |
+| `services/asset_service.py` | Wire pre-flight into `submit_asset()` |
+
+---
+
+#### Phase R1: Simple Linear Workflow (NEXT)
+
+Linear pipeline — blob to COG to STAC, no branching, no tiling.
+
+```
+START → blob_to_mount → validate → create_cog → stac_ensure_collection → stac_register_item → END
+```
+
+**Data flow**:
+
+```
+blob_to_mount
+  IN:  inputs.blob_name, inputs.container_name
+  OUT: local_path, size_bytes, size_mb
+
+validate_raster
+  IN:  copy_to_mount.output.local_path, inputs.input_crs?, inputs.raster_type?, inputs.output_tier?
+  OUT: valid, source_crs, bounds, raster_type, compression_profile, estimated_compressed_mb
+
+create_cog
+  IN:  copy_to_mount.output.local_path, validate_raster.output (entire dict), inputs.target_crs?
+  OUT: cog_blob, cog_container, size_mb, file_checksum
+
+ensure_collection
+  IN:  inputs.collection_id, inputs.title?, validate_raster.output.bounds
+  OUT: collection_id, created, updated
+
+register_stac_item
+  IN:  create_cog.output.cog_blob, create_cog.output.cog_container, validate_raster.output
+  OUT: item_id, collection_id, viewer_url, tilejson_url
 ```
 
 | Item | What It Is | Status |
 |------|-----------|--------|
-| Fix workflow YAML | Existing `raster_ingest.yaml` uses wrong handler names — align to actual registered handlers | Not started |
-| Wire handler params | Template expressions to pass validate output → COG input → STAC input | Not started |
+| Fix workflow YAML | `raster_ingest.yaml` v2 — correct handlers, template wiring, blob_to_mount first | **Done** (13 FEB) |
+| Delete broken YAML | `raster_processing.yaml` removed (redundant with `raster_process.yaml`) | **Done** (13 FEB) |
+| Pre-flight validator | `PreflightValidator` ABC + `RasterPreflightValidator`, wire into submit path | Not started |
 | Test E2E in Azure | Submit real raster → get COG output + STAC entry | Not started |
 | Fix handler bugs | Handlers were written speculatively — expect integration issues | Not started |
 
-**Success criteria**: Submit a raster blob → validate passes → COG created in silver container → STAC collection + item registered → job COMPLETED with artifact paths.
+**Success criteria**: Submit a raster blob → pre-flight validates params + blob exists → blob copied to mount → validate passes → COG created in silver container → STAC collection + item registered → job COMPLETED with artifact paths.
 
 #### Phase R2: Conditional Routing + Tiling (AFTER R1)
 
-Leverage the DAG for size-based conditional routing:
+Leverage the DAG for size-based conditional routing. All paths start with blob_to_mount (no in-memory path).
 
 ```
-START → validate → route_by_size ─┬─ small  → create_cog (memory) ────────────────────┐
-                                  ├─ medium → create_cog (docker) ─────────────────────┤
-                                  └─ large  → blob_to_mount → generate_tiles → fan_out ┤
-                                                                                        ↓
-                                                                     stac_ensure_collection → stac_register → END
+START → blob_to_mount → validate → route_by_size
+  ├── small/medium → create_cog (single) ───────────────────────────────────┐
+  └── large        → generate_tiling_scheme → process_tile_batch (checkpoint)┤
+                                                                             ↓
+                                               stac_ensure_collection → stac_register_item(s) → END
 ```
+
+Workflow: `raster_process.yaml` (already exists with correct handler names, needs `| default()` fixes on optional params).
 
 | Item | What It Is | Status |
 |------|-----------|--------|
-| Fix `raster_processing.yaml` | Align handler names, wire template expressions | Not started |
+| Fix `raster_process.yaml` defaults | Add `\| default()` on all optional params (StrictUndefined) | Not started |
 | Tiling fan-out | Dynamic tile batch creation + parallel processing | Not started |
-| Multi-path STAC registration | Single COG vs tiled COGs (different STAC handlers) | Not started |
+| Multi-path STAC registration | Single COG → `stac_register_item`, tiled → `stac_register_items` | Not started |
 | E2E with multiple raster sizes | Small (<100MB), medium (100MB-1GB), large (>1GB) | Not started |
 
 **After R2**: Resume Phase 4E (projection) — real STAC collections and artifacts exist to project metadata into.
+
+#### Workflow Engine Improvements (identified, not urgent)
+
+| Issue | Impact | Fix |
+|-------|--------|-----|
+| YAML input defaults not applied before template resolution | Every optional param needs `\| default()` in templates — verbose, error-prone | Pre-populate `input_params` with YAML-declared defaults in `JobService.create_job()` |
+| Queue/timeout declared on both handler and YAML | Noise when they're identical | Default to handler-registered values if YAML omits them |
+| Platform passthrough params repeated per STAC node | Copy-paste busywork | `globals:` section in YAML for auto-inject (low priority) |
 
 ---
 
@@ -251,9 +382,10 @@ Polish, operational visibility, and production safety.
 - [ ] CI/CD pipeline not built (GitHub Actions workflow spec exists in IMPL)
 - [x] ~~Retry/timeout logic not yet hardened~~ — Done (09 FEB 2026): timeout detection, retry wiring, 93 tests
 - [ ] Transaction wrapping for multi-step DB updates (crash between steps = inconsistent state)
-- [ ] More raster handlers needed (COG translation, tiling, STAC registration) for full ingest pipeline
+- [x] ~~More raster handlers needed~~ — Done: all 8 raster handlers built (`handlers/raster/`), YAML wired
 - [ ] Gateway RBAC needs tightening: remove Service Bus Data Sender, restrict PostgreSQL to read-only
-- [ ] Workflow YAML input defaults not applied to `input_params` before template resolution (YAML says `default: 1` but `StrictUndefined` throws if param missing from `input_params`)
+- [ ] Workflow YAML input defaults not applied to `input_params` before template resolution (YAML says `default: 1` but `StrictUndefined` throws if param missing from `input_params`) — see "Workflow Engine Improvements" in Raster ETL section
+- [ ] Pre-flight validation not yet implemented — submit path accepts bad params and creates jobs that will fail in the workflow
 - [ ] Bootstrap `/migrate` hardcoded migration list needs `asset_id` column added (workaround: use `/rebuild` for dev)
 
 ---
