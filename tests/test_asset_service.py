@@ -147,6 +147,40 @@ class TestSubmitAsset:
         # Version should be linked to job and processing started
         svc.version_repo.update.assert_awaited_once()
 
+    def test_submit_passes_asset_id_and_correlation_id(self):
+        """create_job receives asset_id and correlation_id for tracing."""
+        svc = _build_service()
+        platform = _make_platform()
+        asset = _make_asset(asset_id="computed-hash-abc")
+        job = _make_job()
+
+        svc.platform_repo.get = AsyncMock(return_value=platform)
+        svc.asset_repo.get_or_create = AsyncMock(return_value=(asset, True))
+        svc.version_repo.has_unresolved_versions = AsyncMock(return_value=False)
+        svc.version_repo.get_next_ordinal = AsyncMock(return_value=0)
+        svc.version_repo.create = AsyncMock(side_effect=lambda v: v)
+        svc.version_repo.update = AsyncMock(return_value=True)
+        svc.job_service.create_job = AsyncMock(return_value=job)
+
+        asyncio.run(
+            svc.submit_asset(
+                platform_id="ddh",
+                platform_refs={"dataset_id": "d1", "resource_id": "r1"},
+                data_type="raster",
+                version_label="V1",
+                workflow_id="raster_ingest",
+                input_params={"blob_path": "bronze/test.tif"},
+                correlation_id="req-12345",
+            )
+        )
+
+        # Verify asset_id and correlation_id passed to create_job
+        call_kwargs = svc.job_service.create_job.call_args.kwargs
+        assert call_kwargs["correlation_id"] == "req-12345"
+        # asset_id is computed from platform_id + refs, not "computed-hash-abc"
+        assert call_kwargs["asset_id"] is not None
+        assert len(call_kwargs["asset_id"]) == 32  # SHA256[:32]
+
     def test_idempotent_existing_asset(self):
         """Same platform_refs → same asset_id, new version ordinal."""
         svc = _build_service()
@@ -487,6 +521,25 @@ class TestReprocessing:
 
         assert result_version.revision == 1
         assert result_version.processing_state == ProcessingStatus.PROCESSING
+
+    def test_reprocess_passes_asset_id(self):
+        """Reprocess passes asset_id to create_job for tracing."""
+        svc = _build_service()
+        version = _make_version(
+            asset_id="my-asset-id",
+            processing_state=ProcessingStatus.COMPLETED,
+        )
+        new_job = _make_job("reprocess-job")
+        svc.version_repo.get = AsyncMock(return_value=version)
+        svc.version_repo.update = AsyncMock(return_value=True)
+        svc.job_service.create_job = AsyncMock(return_value=new_job)
+
+        asyncio.run(
+            svc.reprocess_version("my-asset-id", 0, "w", {})
+        )
+
+        call_kwargs = svc.job_service.create_job.call_args.kwargs
+        assert call_kwargs["asset_id"] == "my-asset-id"
 
 
 # ============================================================================

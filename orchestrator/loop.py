@@ -78,6 +78,7 @@ class Orchestrator:
         workflow_service: WorkflowService,
         poll_interval: float = 1.0,
         event_service: Optional[EventService] = None,
+        asset_service: Optional["GeospatialAssetService"] = None,
     ):
         """
         Initialize orchestrator.
@@ -87,11 +88,13 @@ class Orchestrator:
             workflow_service: Workflow definition service
             poll_interval: Seconds between main loop cycles
             event_service: Optional event service for timeline logging
+            asset_service: Optional asset service for processing callbacks
         """
         self.pool = pool
         self.workflow_service = workflow_service
         self.poll_interval = poll_interval
         self._event_service = event_service
+        self.asset_service = asset_service
 
         # Unique ID for this orchestrator instance
         self._owner_id = str(uuid.uuid4())
@@ -1212,6 +1215,17 @@ class Orchestrator:
             result_data = await self._aggregate_results(job.job_id)
             await self.job_service.complete_job(job.job_id, result_data)
 
+            # Update linked asset version (no-op for standalone jobs)
+            if self.asset_service:
+                try:
+                    await self.asset_service.on_processing_completed(
+                        job.job_id, result_data
+                    )
+                except Exception as e:
+                    logger.error(
+                        f"Asset callback failed for completed job {job.job_id}: {e}"
+                    )
+
             # Release ownership (job is done)
             await self._job_repo.release_ownership(job.job_id, self._owner_id)
 
@@ -1225,6 +1239,17 @@ class Orchestrator:
                     error = node.error_message
                     break
             await self.job_service.fail_job(job.job_id, error)
+
+            # Update linked asset version (no-op for standalone jobs)
+            if self.asset_service:
+                try:
+                    await self.asset_service.on_processing_failed(
+                        job.job_id, error
+                    )
+                except Exception as e:
+                    logger.error(
+                        f"Asset callback failed for failed job {job.job_id}: {e}"
+                    )
 
             # Release ownership (job is done)
             await self._job_repo.release_ownership(job.job_id, self._owner_id)

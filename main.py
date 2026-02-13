@@ -35,6 +35,7 @@ from messaging import get_publisher, close_publisher
 from api.routes import router, set_services
 from api.ui_routes import router as ui_router, set_ui_services
 from api.bootstrap_routes import router as bootstrap_router
+from api.domain_routes import router as domain_router, set_domain_services
 
 # Health check system
 from health import health_router, get_registry
@@ -97,9 +98,14 @@ async def lifespan(app: FastAPI):
     job_service = JobService(pool, _workflow_service, event_service)
     node_service = NodeService(pool, _workflow_service, event_service)
 
-    # Initialize orchestrator
+    # Initialize asset service (domain authority for business objects)
+    from services.asset_service import GeospatialAssetService
+    asset_service = GeospatialAssetService(pool, job_service, event_service)
+    logger.info("Asset service initialized")
+
+    # Initialize orchestrator (with asset_service for processing callbacks)
     poll_interval = float(os.environ.get("ORCHESTRATOR_POLL_INTERVAL", "1.0"))
-    _orchestrator = Orchestrator(pool, _workflow_service, poll_interval, event_service)
+    _orchestrator = Orchestrator(pool, _workflow_service, poll_interval, event_service, asset_service)
 
     # Set services for API routes
     set_services(
@@ -110,6 +116,9 @@ async def lifespan(app: FastAPI):
         pool=pool,
         event_service=event_service,
     )
+
+    # Set services for domain routes (business domain mutations)
+    set_domain_services(asset_service=asset_service)
 
     # Set services for UI routes
     set_ui_services(
@@ -168,6 +177,9 @@ app.include_router(health_router)
 
 # Include API routes
 app.include_router(router, prefix="/api/v1")
+
+# Include domain routes (business domain mutations — gateway proxies here)
+app.include_router(domain_router, prefix="/api/v1")
 
 # Include bootstrap routes (schema deployment)
 app.include_router(bootstrap_router, prefix="/api/v1")

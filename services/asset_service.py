@@ -66,6 +66,7 @@ class GeospatialAssetService:
         workflow_id: str,
         input_params: Dict[str, Any],
         submitted_by: Optional[str] = None,
+        correlation_id: Optional[str] = None,
     ) -> Tuple[GeospatialAsset, AssetVersion, Any]:
         """
         Main entry point: validate, create-or-find asset, create version, start DAG job.
@@ -129,11 +130,13 @@ class GeospatialAssetService:
         )
         await self.version_repo.create(version)
 
-        # 8. Create DAG job
+        # 8. Create DAG job (with asset_id + correlation_id for tracing)
         job = await self.job_service.create_job(
             workflow_id=workflow_id,
             input_params=input_params,
             submitted_by=submitted_by,
+            correlation_id=correlation_id,
+            asset_id=asset_id,
         )
 
         # 9. Link version to job and start processing
@@ -351,11 +354,12 @@ class GeospatialAssetService:
                 f"(must be completed or failed)"
             )
 
-        # Create new DAG job
+        # Create new DAG job (link back to asset for tracing)
         job = await self.job_service.create_job(
             workflow_id=workflow_id,
             input_params=input_params,
             submitted_by=submitted_by,
+            asset_id=asset_id,
         )
 
         # Increment revision, reset processing state
