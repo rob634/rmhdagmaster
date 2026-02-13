@@ -50,14 +50,14 @@ class JobRepository:
                 INSERT INTO {} (
                     job_id, workflow_id, status, input_params, result_data,
                     error_message, created_at, started_at,
-                    completed_at, submitted_by, correlation_id, version,
+                    completed_at, submitted_by, correlation_id, asset_id, version,
                     owner_id, owner_heartbeat_at,
                     workflow_version, workflow_snapshot
                 ) VALUES (
                     %(job_id)s, %(workflow_id)s, %(status)s, %(input_params)s,
                     %(result_data)s, %(error_message)s,
                     %(created_at)s, %(started_at)s, %(completed_at)s,
-                    %(submitted_by)s, %(correlation_id)s, %(version)s,
+                    %(submitted_by)s, %(correlation_id)s, %(asset_id)s, %(version)s,
                     %(owner_id)s, %(owner_heartbeat_at)s,
                     %(workflow_version)s, %(workflow_snapshot)s
                 )
@@ -74,6 +74,7 @@ class JobRepository:
                     "completed_at": job.completed_at,
                     "submitted_by": job.submitted_by,
                     "correlation_id": job.correlation_id,
+                    "asset_id": job.asset_id,
                     "version": job.version,
                     "owner_id": job.owner_id,
                     "owner_heartbeat_at": job.owner_heartbeat_at,
@@ -362,6 +363,7 @@ class JobRepository:
             updated_at=updated_at,
             submitted_by=row.get("submitted_by"),
             correlation_id=row.get("correlation_id"),
+            asset_id=row.get("asset_id"),
             version=row.get("version", 1),
             # Multi-orchestrator ownership
             owner_id=row.get("owner_id"),
@@ -396,14 +398,14 @@ class JobRepository:
                 INSERT INTO {} (
                     job_id, workflow_id, status, input_params, result_data,
                     error_message, created_at, started_at,
-                    completed_at, submitted_by, correlation_id, version,
+                    completed_at, submitted_by, correlation_id, asset_id, version,
                     owner_id, owner_heartbeat_at,
                     workflow_version, workflow_snapshot
                 ) VALUES (
                     %(job_id)s, %(workflow_id)s, %(status)s, %(input_params)s,
                     %(result_data)s, %(error_message)s,
                     %(created_at)s, %(started_at)s, %(completed_at)s,
-                    %(submitted_by)s, %(correlation_id)s, %(version)s,
+                    %(submitted_by)s, %(correlation_id)s, %(asset_id)s, %(version)s,
                     %(owner_id)s, %(owner_heartbeat_at)s,
                     %(workflow_version)s, %(workflow_snapshot)s
                 )
@@ -420,6 +422,7 @@ class JobRepository:
                     "completed_at": job.completed_at,
                     "submitted_by": job.submitted_by,
                     "correlation_id": job.correlation_id,
+                    "asset_id": job.asset_id,
                     "version": job.version,
                     "owner_id": job.owner_id,
                     "owner_heartbeat_at": job.owner_heartbeat_at,

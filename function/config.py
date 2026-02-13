@@ -10,24 +10,29 @@
 Function App Configuration
 
 Loads configuration from environment variables with sensible defaults.
+
+Database auth uses the same env vars and auth module as the orchestrator:
+- USE_MANAGED_IDENTITY=true → UMI token via infrastructure/auth
+- Otherwise → POSTGRES_PASSWORD or DATABASE_URL
 """
 
 import os
+import logging
 from dataclasses import dataclass
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
 class FunctionConfig:
     """Configuration for the function app."""
 
-    # Database
+    # Database (same env vars as orchestrator: POSTGRES_*)
     database_url: Optional[str] = None
-    postgis_host: str = "localhost"
-    postgis_port: str = "5432"
-    postgis_database: str = "dagmaster"
-    postgis_user: str = "postgres"
-    postgis_password: str = ""
+    postgres_host: str = "localhost"
+    postgres_port: str = "5432"
+    postgres_db: str = "postgres"
     db_schema: str = "dagapp"
 
     # Service Bus
@@ -47,16 +52,17 @@ class FunctionConfig:
     def from_env(cls) -> "FunctionConfig":
         """Load configuration from environment variables."""
         return cls(
-            # Database
+            # Database (aligned with orchestrator env vars)
             database_url=os.environ.get("DATABASE_URL"),
-            postgis_host=os.environ.get("POSTGIS_HOST", "localhost"),
-            postgis_port=os.environ.get("POSTGIS_PORT", "5432"),
-            postgis_database=os.environ.get("POSTGIS_DATABASE", "dagmaster"),
-            postgis_user=os.environ.get("POSTGIS_USER", "postgres"),
-            postgis_password=os.environ.get("POSTGIS_PASSWORD", ""),
+            postgres_host=os.environ.get("POSTGRES_HOST", "localhost"),
+            postgres_port=os.environ.get("POSTGRES_PORT", "5432"),
+            postgres_db=os.environ.get("POSTGRES_DB", "postgres"),
             db_schema=os.environ.get("DB_SCHEMA", "dagapp"),
             # Service Bus
-            service_bus_namespace=os.environ.get("SERVICE_BUS_NAMESPACE", ""),
+            service_bus_namespace=os.environ.get(
+                "SERVICE_BUS_NAMESPACE",
+                os.environ.get("SERVICE_BUS_FQDN", ""),
+            ),
             service_bus_connection_string=os.environ.get("SERVICE_BUS_CONNECTION_STRING"),
             job_queue_name=os.environ.get("JOB_QUEUE_NAME", ""),
             # Docker URLs
@@ -68,28 +74,46 @@ class FunctionConfig:
         )
 
     def get_connection_string(self) -> str:
-        """Get database connection string."""
+        """
+        Get database connection string.
+
+        Delegates to infrastructure/auth for managed identity support,
+        using the same auth path as the orchestrator.
+        """
+        # 1. Explicit DATABASE_URL overrides everything
         if self.database_url:
             return self.database_url
 
-        if self.postgis_password:
-            return (
-                f"postgresql://{self.postgis_user}:{self.postgis_password}"
-                f"@{self.postgis_host}:{self.postgis_port}/{self.postgis_database}"
-                f"?sslmode=require"
-            )
-        else:
-            # No password - might be using managed identity
-            return (
-                f"postgresql://{self.postgis_user}"
-                f"@{self.postgis_host}:{self.postgis_port}/{self.postgis_database}"
-                f"?sslmode=require"
-            )
+        # 2. Managed identity (same as orchestrator)
+        use_mi = os.environ.get("USE_MANAGED_IDENTITY", "false").lower() == "true"
+        if use_mi:
+            try:
+                from infrastructure.auth import get_postgres_connection_string
+                logger.info("Gateway using Managed Identity for PostgreSQL")
+                return get_postgres_connection_string()
+            except ImportError:
+                logger.warning("Auth module not available, falling back to password auth")
+            except Exception as e:
+                logger.error(f"Managed identity auth failed: {e}")
+                raise
+
+        # 3. Password auth fallback
+        user = os.environ.get("POSTGRES_USER", "postgres")
+        password = os.environ.get("POSTGRES_PASSWORD", "")
+
+        return (
+            f"host={self.postgres_host} "
+            f"port={self.postgres_port} "
+            f"dbname={self.postgres_db} "
+            f"user={user} "
+            f"password={password} "
+            f"sslmode=require"
+        )
 
     @property
     def has_database_config(self) -> bool:
         """Check if database is configured."""
-        return bool(self.database_url or self.postgis_host)
+        return bool(self.database_url or self.postgres_host != "localhost")
 
     @property
     def has_service_bus_config(self) -> bool:

@@ -303,6 +303,7 @@ class Orchestrator:
                 input_params=message.input_params,
                 submitted_by=message.submitted_by,
                 correlation_id=message.correlation_id,
+                asset_id=message.asset_id,
                 idempotency_key=message.idempotency_key,
             )
 

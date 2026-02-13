@@ -117,6 +117,42 @@ class FunctionRepository:
                 cur.execute(query, params)
                 return cur.fetchall()
 
+    def execute_write(self, query: str, params: tuple = ()) -> int:
+        """
+        Execute INSERT/UPDATE/DELETE and commit.
+
+        Args:
+            query: SQL statement
+            params: Query parameters tuple
+
+        Returns:
+            Number of rows affected
+        """
+        with self._get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(query, params)
+                rowcount = cur.rowcount
+            conn.commit()
+            return rowcount
+
+    def execute_write_returning(self, query: str, params: tuple = ()) -> Optional[Dict[str, Any]]:
+        """
+        Execute INSERT/UPDATE with RETURNING clause and commit.
+
+        Args:
+            query: SQL statement with RETURNING clause
+            params: Query parameters tuple
+
+        Returns:
+            Returned row as dict, or None
+        """
+        with self._get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(query, params)
+                row = cur.fetchone()
+            conn.commit()
+            return row
+
     def execute_count(self, query: str, params: tuple = ()) -> int:
         """
         Execute COUNT query and return integer.

@@ -1,6 +1,6 @@
 # CLAUDE.md - rmhdagmaster Project Constitution
 
-**Last Updated**: 06 FEB 2026
+**Last Updated**: 12 FEB 2026
 
 ---
 
@@ -14,8 +14,8 @@ One codebase builds THREE deployment targets:
 
 | Target | Base | Size | Purpose |
 |--------|------|------|---------|
-| **Function App** | Azure Functions | ~50MB | Gateway: job submission, status queries, HTTP proxy |
-| **DAG Orchestrator** | python:3.12-slim | ~250MB | Coordination: main loop, heartbeat, orphan recovery |
+| **Function App** | Azure Functions | ~50MB | Gateway: ACL proxy, read-only queries, forwards mutations to orchestrator |
+| **DAG Orchestrator** | python:3.12-slim | ~250MB | Domain authority + DAG execution: business services, main loop, heartbeat, orphan recovery |
 | **DAG Worker** | osgeo/gdal:ubuntu-full | ~2-3GB | Execution: GDAL processing, heavy ETL |
 
 For architecture details, see `docs/ARCHITECTURE.md`.
@@ -26,13 +26,13 @@ For architecture details, see `docs/ARCHITECTURE.md`.
 
 1. **FIRST PRINCIPLE DESIGN** - There is NOTHING to be backward compatible with- all design changes mean a new schema ex nihilo no fallbacks no accomodating old patterns we are architectuing and building a new app
 
-2. **Orchestrator purity** — The orchestrator coordinates, never executes business logic.
+2. **Orchestrator authority** — The orchestrator owns all domain mutations and DAG execution. Workers execute tasks. The Gateway is a read-only ACL proxy — it never writes to the database.
 
 3. **Worker idempotency** — Any task can be retried safely; workers handle duplicate delivery.
 
 4. **State lives in Postgres** — Workers are stateless; all durable state is in the database.
 
-5. **Repository pattern** — All database access goes through repository classes. No raw `psycopg.connect` outside the infrastructure layer.
+5. **Repository pattern** — All database access goes through repository classes. No raw `psycopg.connect` outside the infrastructure layer. Orchestrator repositories have full CRUD authority. Gateway repositories are read-only (query repos only).
 
 6. **Pydantic is the schema** — Models are the single source of truth for data structures. All serialization crosses boundaries via `.model_dump()` / `.model_validate()`—never raw JSON/dict manipulation. Pydantic V2 only.
 

@@ -104,9 +104,8 @@ def admin_config(req: func.HttpRequest) -> func.HttpResponse:
     safe_config = {
         "job_queue_name": config.job_queue_name,
         "service_bus_namespace": config.service_bus_namespace or "(connection string)",
-        "database_host": config.postgis_host,
-        "database_name": config.postgis_database,
-        "database_user": config.postgis_user,
+        "database_host": config.postgres_host,
+        "database_name": config.postgres_db,
         "db_schema": config.db_schema,
         "orchestrator_url": config.orchestrator_url,
         "worker_url": config.worker_url,

@@ -62,6 +62,11 @@ class JobQueueMessage(BaseModel):
         max_length=64,
         description="External correlation ID for tracing across systems"
     )
+    asset_id: Optional[str] = Field(
+        default=None,
+        max_length=64,
+        description="Geospatial asset ID this job processes (NULL for standalone jobs)"
+    )
     submitted_by: Optional[str] = Field(
         default=None,
         max_length=64,

@@ -152,9 +152,73 @@ class ProxyRequest(BaseModel):
     )
 
 
+class AssetSubmitRequest(BaseModel):
+    """Request to submit a geospatial asset for processing."""
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "platform_id": "ddh",
+                "platform_refs": {"dataset_id": "d123", "resource_id": "r456"},
+                "data_type": "raster",
+                "version_label": "V1",
+                "workflow_id": "raster_ingest",
+                "input_params": {"blob_path": "bronze/my_raster.tif"},
+            }
+        }
+    )
+
+    request_id: Optional[str] = Field(
+        default=None, max_length=64,
+        description="B2B request ID for polling job status (becomes correlation_id on job)"
+    )
+    platform_id: str = Field(..., max_length=50, description="B2B platform ID")
+    platform_refs: Dict[str, Any] = Field(
+        ..., description="Platform identity references (used to compute asset_id)"
+    )
+    data_type: str = Field(
+        ..., pattern=r"^(raster|vector)$", description="'raster' or 'vector'"
+    )
+    version_label: Optional[str] = Field(
+        default=None, max_length=100, description="Opaque B2B version name"
+    )
+    workflow_id: str = Field(..., max_length=64, description="DAG workflow to execute")
+    input_params: Dict[str, Any] = Field(
+        default_factory=dict, description="Parameters passed to the workflow"
+    )
+    submitted_by: Optional[str] = Field(
+        default=None, max_length=64, description="Identity of submitter"
+    )
+    callback_url: Optional[str] = Field(
+        default=None, max_length=512, description="Webhook for completion notification"
+    )
+
+
+class ApprovalRequest(BaseModel):
+    """Request to approve or reject an asset version."""
+
+    model_config = ConfigDict()
+
+    reviewer: str = Field(..., max_length=64, description="Identity of reviewer")
+    reason: Optional[str] = Field(
+        default=None, max_length=500, description="Rejection reason (required for reject)"
+    )
+
+
+class ClearanceRequest(BaseModel):
+    """Request to change asset clearance."""
+
+    model_config = ConfigDict()
+
+    actor: str = Field(..., max_length=64, description="Identity of actor")
+
+
 __all__ = [
     "JobSubmitRequest",
     "BatchSubmitRequest",
     "JobQueryRequest",
     "ProxyRequest",
+    "AssetSubmitRequest",
+    "ApprovalRequest",
+    "ClearanceRequest",
 ]

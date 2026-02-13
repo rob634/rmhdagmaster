@@ -1,6 +1,6 @@
 # rmhdagmaster Implementation Guide
 
-**Last Updated**: 07 FEB 2026
+**Last Updated**: 12 FEB 2026
 
 > This document contains detailed implementation specs, code examples, and task checklists.
 > For system architecture and design, see `ARCHITECTURE.md`.
@@ -30,11 +30,11 @@
 
 ---
 
-## 1. Function App Gateway
+## 1. Function App Gateway (ACL Proxy)
 
-**Status**: Phase 0.9.5 DONE (04 FEB 2026)
+**Status**: Phase 0.9.5 DONE (04 FEB 2026) — **Architectural revision 12 FEB 2026**: Gateway is now a read-only ACL proxy. All mutations forward to orchestrator HTTP API. See ARCHITECTURE.md Section 15.6.
 
-The Azure Function App serves as the B2B Gateway and ACL for the DAG orchestration platform. It is a lightweight deployment (~50MB) separate from the Docker orchestrator and worker images.
+The Azure Function App serves as a **read-only ACL proxy** for the DAG orchestration platform. It forwards B2B mutation requests to the orchestrator's HTTP API and serves read-only queries from its own DB connection. It is a lightweight deployment (~50MB) separate from the Docker orchestrator and worker images. **The gateway never writes to the database.**
 
 ### 1.1 Design Philosophy: Request/Job Separation
 
@@ -56,11 +56,12 @@ B2B NEVER sees: job_id, node states, orchestrator details, correlation_id
 
 **Flow**:
 1. B2B submits job request with their identity + parameters
-2. Gateway generates `request_id` (UUID), returns immediately
-3. Gateway queues job with `request_id` as internal `correlation_id`
-4. Orchestrator claims job, creates internal `job_id`
-5. B2B polls by `request_id` - Gateway translates to internal lookup
-6. B2B receives status/result - never sees `job_id`
+2. Gateway generates `request_id` (UUID)
+3. Gateway forwards request to orchestrator HTTP API (`POST /api/v1/submit`) with `request_id`
+4. Orchestrator creates asset + version + DAG job atomically, stores `request_id` as `correlation_id`
+5. Gateway returns `request_id` to B2B caller
+6. B2B polls by `request_id` — Gateway forwards to orchestrator, filters response to B2B-safe fields
+7. B2B receives status/result — never sees `job_id`, node states, or orchestrator internals
 
 ### 1.2 File Structure
 
@@ -76,11 +77,13 @@ rmhdagmaster/
 │   ├── config.py               # Function app configuration
 │   ├── startup.py              # Startup validation
 │   │
-│   ├── blueprints/             # HTTP endpoint blueprints
+│   ├── blueprints/             # HTTP endpoint blueprints (read-only + proxy)
 │   │   ├── __init__.py
-│   │   ├── gateway_bp.py       # Job submission endpoints
-│   │   ├── status_bp.py        # Status query endpoints
-│   │   ├── admin_bp.py         # Admin/maintenance endpoints
+│   │   ├── platform_bp.py      # B2B submit (proxy) + status polling (read)
+│   │   ├── asset_bp.py         # Asset queries (read) + mutations (proxy)
+│   │   ├── gateway_bp.py       # Direct job submission (proxy)
+│   │   ├── status_bp.py        # Status query endpoints (read-only)
+│   │   ├── admin_bp.py         # Admin/maintenance endpoints (read-only)
 │   │   └── proxy_bp.py         # HTTP proxy to Docker apps
 │   │
 │   ├── models/                 # Function-specific Pydantic models
@@ -89,12 +92,13 @@ rmhdagmaster/
 │   │   ├── responses.py        # API response models
 │   │   └── health.py           # Health check models
 │   │
-│   └── repositories/           # Read-only database access
+│   └── repositories/           # Read-only database access (NO write methods)
 │       ├── __init__.py
-│       ├── base.py             # PostgreSQL base repository
+│       ├── base.py             # PostgreSQL base repository (read-only)
 │       ├── job_query_repo.py   # Job queries (read-only)
 │       ├── node_query_repo.py  # Node queries (read-only)
-│       └── event_query_repo.py # Event queries (read-only)
+│       ├── event_query_repo.py # Event queries (read-only)
+│       └── asset_query_repo.py # Asset/version queries (read-only)
 ```
 
 ### 1.3 Entry Point
@@ -232,11 +236,11 @@ class InternalJobStatusResponse(BaseModel):
 | **Proxy** | `/proxy/{target}/{path}` | * | Forward to orchestrator/worker |
 | | `/proxy/health` | GET | Health of all Docker apps |
 
-### 1.7 Repository Pattern (Read-Only)
+### 1.7 Repository Pattern (Read-Only — NO Write Methods)
 
 **File**: `function/repositories/base.py`
 
-The Function App uses synchronous psycopg3 with `dict_row` factory. All repos extend `FunctionRepository`:
+The Function App uses synchronous psycopg3 with `dict_row` factory. All repos extend `FunctionRepository`. **Gateway repositories must NEVER have write methods** — all mutations are forwarded to the orchestrator's HTTP API. This is a security boundary: even if the gateway is compromised, it cannot corrupt domain state.
 
 ```python
 class FunctionRepository:
@@ -260,20 +264,19 @@ Domain repositories:
 - `NodeQueryRepository` - `get_node()`, `get_nodes_for_job()`, `get_nodes_by_status()`, `count_nodes_by_status()`
 - `EventQueryRepository` - `get_events_for_job()`, `get_recent_events()`, `count_events_by_type()`
 
-### 1.8 Platform Blueprint (B2B Gateway)
+### 1.8 Platform Blueprint (B2B ACL Proxy)
 
 **File**: `function/blueprints/platform_bp.py`
 
-The platform submit endpoint:
+The platform submit endpoint (**proxy — no DB writes**):
 1. Validates request via Pydantic
 2. Generates `request_id` (UUID)
-3. Checks idempotency key for duplicates
-4. Creates `JobQueueMessage` with `request_id` as `correlation_id`
-5. Sends to Service Bus `dag-jobs` queue
-6. Returns 202 Accepted with `request_id`
+3. Forwards full request to orchestrator HTTP API (`POST /api/v1/submit`) with `request_id`
+4. Orchestrator creates asset + version + job atomically, returns full details
+5. Gateway filters response, returns 202 Accepted with `request_id` only
 
-The platform status endpoint:
-1. Looks up job by `correlation_id` (which is the `request_id`)
+The platform status endpoint (**read-only**):
+1. Forwards to orchestrator status endpoint, OR queries gateway's read-only DB by `correlation_id`
 2. Maps internal status to B2B-friendly status
 3. Returns only B2B-safe fields (no job_id, nodes, orchestrator details)
 
@@ -293,8 +296,8 @@ Forwards HTTP requests to Docker apps using `httpx`:
 
 | Role | Target | Purpose |
 |------|--------|---------|
-| `Azure Service Bus Data Sender` | `dag-jobs` queue | Job submission |
-| PostgreSQL read access | `dagapp` schema | Status queries |
+| PostgreSQL **read-only** access | `dagapp` schema | Status queries (no write access) |
+| Network access to orchestrator | Orchestrator HTTP API | Forward mutations via proxy |
 | Managed Identity | Function App | Authentication |
 
 ### 1.11 Remaining Tasks
@@ -1176,171 +1179,28 @@ def job_to_dto(job: Job) -> JobDTO:
 
 ---
 
-## 11. H3 Network Synthesis
+## 11. H3 Hexagonal Aggregation Pipeline
 
-### 11.1 Concept
+**Status**: Design complete (12 FEB 2026) — implementation deferred until core DAG is production-ready.
 
-Traditional traffic analytics (Uber's approach) observe real GPS traces and infer road network topology. This project inverts that pattern: start with known road network topology (Overture Maps) and synthesize "observations" that encode connectivity and hierarchy into an H3 transition matrix.
+**Full design document**: `docs/HEXAGONS.md`
 
-The result is a road network represented as weighted transitions between H3 cells -- the same data structure that would emerge from billions of GPS observations, but derived from authoritative map data.
+This section previously contained an early sketch of H3 network synthesis. The design has been significantly expanded into a standalone document covering:
 
-**What This Enables**:
-- Accessibility analysis at any scale using H3 spatial operations
-- Flood impact modeling by zeroing transitions for inundated cells
-- Network resilience analysis without dedicated routing infrastructure
-- Hybrid with real data -- synthetic network as prior, empirical data as updates
+- **Raster zonal statistics**: Fan-out by L3 cell, `exactextract` against rasters, parquet output (Sections 1–4)
+- **Computation catalog**: Database schema defining what gets computed — recipe book in PostgreSQL, output in parquet on blob storage (Section 5)
+- **Vector aggregation**: Overture Maps GeoParquet + internal PostGIS sources — point count, line length by class, polygon area, binary intersect (Section 10)
+- **Cell connectivity graph**: Adjacent-cell road crossing model with deterministic boundary ownership (no shuffle), travel-time scoring, igraph analysis (Section 11)
+- **Friction surface**: Combine road connectivity + raster terrain stats for travel-cost edge weights (Section 11.7)
 
-### 11.2 Workflow 1: Build Road Network Transition Matrix
+**Key design decisions** (documented in HEXAGONS.md Section 2):
+1. No H3 geometry bootstrap — `h3-py` generates cells on the fly
+2. Geodesic distance everywhere — no projected CRS, no UTM zones
+3. No database for computed stats — parquet is the only data layer
+4. Overture GeoParquet over HTTP — no planet.osm import
+5. L3 chunking for fan-out (~2,800 cells per chunk, 50–500 tasks per raster)
 
-```
-[init_staging]
-      |
-      v
-[generate_chunks] ──────────────────────────────┐
-      |                                         |
-      v                                         |
-┌─────────────────────────────────────────┐     |
-|  [process_chunk_001]                    |     |
-|  [process_chunk_002]                    |     |
-|       ...                               |     |  PARALLEL
-|  [process_chunk_N]                      |     |  (foreach chunk)
-└─────────────────────────────────────────┘     |
-      |                                         |
-      v  <──────────────────────────────────────┘
-[aggregate_transitions]
-      |
-      v
-[compute_probabilities]
-      |
-      v
-[create_indexes]
-      |
-      v
-[cleanup_staging]
-```
-
-#### Node Specifications
-
-| Node | Type | Dependencies | Action |
-|------|------|-------------|--------|
-| init_staging | SQL | None | Create staging schema and raw transitions table |
-| generate_chunks | Computation | init_staging | Output list of bounding boxes |
-| process_chunk | Worker task (parallel) | generate_chunks | DuckDB read -> H3 transform -> PostGIS write |
-| aggregate_transitions | SQL | ALL process_chunk | GROUP BY (from_cell, to_cell), SUM weights |
-| compute_probabilities | SQL | aggregate_transitions | weight / sum of outgoing weights per cell |
-| create_indexes | SQL | compute_probabilities | B-tree on from_cell, to_cell |
-| cleanup_staging | SQL | create_indexes | Drop staging schema |
-
-#### Road Class Weights
-
-| Overture Class | Weight | Rationale |
-|----------------|--------|-----------|
-| motorway | 1000 | High capacity, high speed |
-| trunk | 500 | Major arterial |
-| primary | 200 | Primary roads |
-| secondary | 100 | Secondary roads |
-| tertiary | 50 | Tertiary roads |
-| residential | 10 | Local access |
-| service | 5 | Parking lots, driveways |
-
-#### Output Schema
-
-```sql
-TABLE h3_road_transitions (
-    from_cell       h3index,
-    to_cell         h3index,
-    total_weight    integer,
-    road_classes    text[],
-    probability     float
-)
-```
-
-### 11.3 Workflow 2: Flood Impact Analysis
-
-```
-[load_hazard_data]
-      |
-      +──────────────────────┐
-      v                      v
-[h3_index_hazard]    [load_transition_matrix]
-      |                      |
-      └──────────┬───────────┘
-                 v
-         [compute_impacted_network]
-                 |
-                 v
-         [accessibility_analysis]
-                 |
-                 v
-         [generate_outputs]
-```
-
-#### Analysis Patterns
-
-Remove flooded cells:
-```sql
-SELECT from_cell, to_cell, probability
-FROM h3_road_transitions
-WHERE from_cell NOT IN (SELECT cell FROM flooded_cells)
-  AND to_cell NOT IN (SELECT cell FROM flooded_cells);
-```
-
-Accessibility index (recursive CTE):
-```sql
-WITH RECURSIVE reachable AS (
-    SELECT to_cell as cell, probability as cumulative_prob, 1 as hops
-    FROM h3_road_transitions WHERE from_cell = :origin_cell
-    UNION ALL
-    SELECT t.to_cell, r.cumulative_prob * t.probability, r.hops + 1
-    FROM reachable r JOIN h3_road_transitions t ON r.cell = t.from_cell
-    WHERE r.hops < :max_hops AND r.cumulative_prob * t.probability > :min_probability
-)
-SELECT cell, MAX(cumulative_prob) as accessibility
-FROM reachable GROUP BY cell;
-```
-
-### 11.4 Implementation Notes
-
-**DuckDB + Overture**: Workers read Overture directly from cloud storage:
-```python
-duckdb.sql("""
-    SELECT id, class, geometry
-    FROM read_parquet('s3://overturemaps-us-west-2/release/2024-*/theme=transportation/*')
-    WHERE bbox.xmin >= ? AND bbox.ymin >= ? AND bbox.xmax <= ? AND bbox.ymax <= ?
-      AND type = 'segment'
-""")
-```
-
-**H3 Resolution**:
-
-| Resolution | Hex Edge | Use Case |
-|------------|----------|----------|
-| 7 | ~1.2 km | Continental/global, coarse analysis |
-| 8 | ~460 m | National scale, general routing |
-| 9 | ~175 m | Regional, distinguishes parallel roads |
-| 10 | ~65 m | Urban detail, intersection-level |
-
-Recommend starting with resolution 8 for tractability, refine to 9 for urban areas.
-
-**Chunk Sizing**:
-
-| Scope | Chunk Size | Approx Chunks | Est. Runtime (30 workers) |
-|-------|------------|---------------|---------------------------|
-| Single country | 0.25 degrees | 50-200 | < 30 min |
-| Continental | 0.5 degrees | 500-1000 | 2-4 hours |
-| Global | 0.5 degrees | 3000-4000 | 6-10 hours |
-
-**Infrastructure**:
-- DAG Brain (Orchestrator): Single Docker instance, mostly I/O wait
-- DAG Workers: Scale 1-30, fat container with DuckDB/GDAL/h3
-- Postgres: h3-pg extension, 1-10 GB storage, connection pooling
-- Service Bus: Single queue, workers compete for tasks
-
-**Success Criteria**:
-1. Workflow 1 completes for target geography at chosen resolution
-2. Transition table queryable with < 1s for single-cell neighborhood
-3. Flood overlay correctly zeros transitions for inundated cells
-4. Accessibility query returns plausible connected regions along roads
+**Implementation phases** (P1–P11) are sequenced in HEXAGONS.md Section 12. All phases depend on the core DAG orchestrator being operational (Tiers 1–3, done) and the business domain layer (Tier 4, in progress).
 
 ---
 

@@ -17,10 +17,14 @@ from function.blueprints.gateway_bp import gateway_bp
 from function.blueprints.status_bp import status_bp
 from function.blueprints.admin_bp import admin_bp
 from function.blueprints.proxy_bp import proxy_bp
+from function.blueprints.asset_bp import asset_bp
+from function.blueprints.platform_bp import platform_bp
 
 __all__ = [
     "gateway_bp",
     "status_bp",
     "admin_bp",
     "proxy_bp",
+    "asset_bp",
+    "platform_bp",
 ]

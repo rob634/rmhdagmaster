@@ -151,6 +151,16 @@ if STARTUP_STATE.all_passed:
     app.register_functions(proxy_bp)
     logger.info("  Registered: proxy_bp (HTTP proxy)")
 
+    # Asset blueprint (business domain queries/admin)
+    from function.blueprints.asset_bp import asset_bp
+    app.register_functions(asset_bp)
+    logger.info("  Registered: asset_bp (asset queries/admin)")
+
+    # Platform blueprint (B2B submission + status polling)
+    from function.blueprints.platform_bp import platform_bp
+    app.register_functions(platform_bp)
+    logger.info("  Registered: platform_bp (B2B submit/status)")
+
     logger.info("=" * 60)
     logger.info("RMHDAGMASTER Gateway Function App Ready")
     logger.info("=" * 60)

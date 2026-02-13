@@ -1,7 +1,8 @@
 # Workflow Version Pinning — Implementation Plan
 
 **Created**: 11 FEB 2026
-**Status**: In Progress
+**Completed**: 11 FEB 2026
+**Status**: Complete — E2E verified in Azure (v0.1.15.0)
 **Tracks**: Tier 5 — Hardening (Version Pinning)
 
 ---
@@ -24,13 +25,13 @@ Schema is rebuilt from scratch via PydanticToSQL — no migration path needed.
 
 | # | File | Change | Status |
 |---|------|--------|--------|
-| 1 | `core/models/job.py` | Add `workflow_version`, `workflow_snapshot` fields + `get_pinned_workflow()` method | [ ] |
-| 2 | `repositories/job_repo.py` | Update `create()`, `create_with_owner()`, `_row_to_job()` to persist/read new fields | [ ] |
-| 3 | `services/job_service.py` | Capture version + snapshot at job creation in `create_job()` | [ ] |
-| 4 | `services/event_service.py` | Add `workflow_version` to `emit_job_created()` event data | [ ] |
-| 5 | `orchestrator/loop.py` | Add `_get_workflow_for_job()` helper, replace 2 lookup calls, enrich `_aggregate_results()` | [ ] |
-| 6 | `function/repositories/job_query_repo.py` | Add `workflow_version` to SELECT lists | [ ] |
-| 7 | `tests/test_integration.py` | Add version pinning tests + fix existing tests for new required fields | [ ] |
+| 1 | `core/models/job.py` | Add `workflow_version`, `workflow_snapshot` fields + `get_pinned_workflow()` method | [x] |
+| 2 | `repositories/job_repo.py` | Update `create()`, `create_with_owner()`, `_row_to_job()` to persist/read new fields | [x] |
+| 3 | `services/job_service.py` | Capture version + snapshot at job creation in `create_job()` | [x] |
+| 4 | `services/event_service.py` | Add `workflow_version` to `emit_job_created()` event data | [x] |
+| 5 | `orchestrator/loop.py` | Add `_get_workflow_for_job()` helper, replace 2 lookup calls, enrich `_aggregate_results()` | [x] |
+| 6 | `function/repositories/job_query_repo.py` | Add `workflow_version` to SELECT lists | [x] |
+| 7 | `tests/test_integration.py` | Add version pinning tests + fix existing tests for new required fields | [x] |
 
 ---
 
@@ -209,8 +210,12 @@ PydanticToSQL picks up new fields automatically on `POST /api/v1/bootstrap/rebui
 
 ## Verification
 
-1. `pytest tests/ -v` — all tests pass
-2. Schema rebuild — verify columns exist
-3. Submit a job — verify `workflow_version` and `workflow_snapshot` populated
-4. Check `result_data._provenance` on completed job
-5. Check `dag_job_events` for `JOB_CREATED` event with `workflow_version` in `event_data`
+All checks passed on 11 FEB 2026:
+
+1. [x] `pytest tests/ -v` — 134 tests pass (93 existing + 4 new version pinning + 37 others)
+2. [x] Schema rebuild via `POST /api/v1/bootstrap/rebuild?confirm=DESTROY` — 70 statements, 0 errors
+3. [x] Echo job submitted — `workflow_version: 1` and `workflow_snapshot` populated in DB
+4. [x] `result_data._provenance` confirmed: `{"workflow_id": "echo_test", "workflow_version": 1, "job_id": "...", "completed_at": "..."}`
+5. [x] JOB_CREATED event includes `workflow_version` in `event_data`
+
+Deployed as v0.1.15.0 to Azure (orchestrator + worker).

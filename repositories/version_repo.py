@@ -178,6 +178,23 @@ class AssetVersionRepository:
             version.version += 1
             return True
 
+    async def get_by_job_id(self, job_id: str) -> Optional[AssetVersion]:
+        """Get the asset version associated with a DAG job.
+
+        Used by processing callbacks to find which version a completed
+        job belongs to.
+        """
+        async with self.pool.connection() as conn:
+            conn.row_factory = dict_row
+            result = await conn.execute(
+                sql.SQL(
+                    "SELECT * FROM {} WHERE current_job_id = %s LIMIT 1"
+                ).format(TABLE_ASSET_VERSIONS),
+                (job_id,),
+            )
+            row = await result.fetchone()
+            return self._row_to_model(row) if row else None
+
     async def list_for_asset(
         self, asset_id: str, limit: int = 50
     ) -> List[AssetVersion]:

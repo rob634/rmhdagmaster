@@ -60,6 +60,7 @@ class JobService:
         input_params: Dict[str, Any],
         submitted_by: Optional[str] = None,
         correlation_id: Optional[str] = None,
+        asset_id: Optional[str] = None,
         idempotency_key: Optional[str] = None,
     ) -> Job:
         """
@@ -70,6 +71,7 @@ class JobService:
             input_params: Input parameters for the workflow
             submitted_by: User or system submitting the job
             correlation_id: External correlation ID
+            asset_id: Geospatial asset ID (NULL for standalone jobs)
             idempotency_key: Optional key for idempotent job creation
 
         Returns:
@@ -104,6 +106,7 @@ class JobService:
             input_params=input_params,
             submitted_by=submitted_by,
             correlation_id=correlation_id,
+            asset_id=asset_id,
         )
 
         await self.job_repo.create(job)

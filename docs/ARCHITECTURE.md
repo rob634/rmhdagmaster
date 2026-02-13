@@ -1,7 +1,7 @@
 # rmhdagmaster Architecture
 
-**Last Updated**: 09 FEB 2026
-**Version**: 0.12.0
+**Last Updated**: 12 FEB 2026
+**Version**: 0.15.0
 
 > For implementation details, task checklists, and code specs, see `IMPLEMENTATION.md`.
 
@@ -41,50 +41,43 @@ One codebase builds three deployment targets:
 
 | Target | Base Image | Size | Purpose |
 |--------|-----------|------|---------|
-| **Function App** | Azure Functions runtime | ~50MB | Gateway: B2B job submission, status queries, HTTP proxy |
-| **DAG Orchestrator** | python:3.12-slim | ~250MB | Coordination: main loop, heartbeat, orphan recovery |
+| **Function App** | Azure Functions runtime | ~50MB | Gateway: ACL proxy, read-only queries, forwards mutations to orchestrator |
+| **DAG Orchestrator** | python:3.12-slim | ~250MB | Domain authority + DAG execution: business services, HTTP API, main loop, heartbeat, orphan recovery |
 | **DAG Worker** | osgeo/gdal:ubuntu-full | ~2-3GB | Execution: GDAL processing, heavy ETL |
 
 ```
                            PLATFORM ARCHITECTURE
 
-   B2B APPS (External)              PLATFORM (Internal)
-   ───────────────────              ──────────────────
+   B2B APPS (External)     GATEWAY (ACL Proxy)        PLATFORM (Internal)
+   ───────────────────      ────────────────           ──────────────────
 
-   ┌─────────────┐                  ┌───────────────────────────────────┐
-   │     DDH     │  ──request───>   │        orchestrator-jobs          │
-   │  (dataset/  │                  │        (Service Bus Queue)        │
-   │  resource/  │                  └─────────────┬─────────────────────┘
-   │  version)   │                                │
-   └─────────────┘                                │ competing consumers
-                                   ┌──────────────┼──────────────┐
-   ┌─────────────┐                 v              v              v
-   │   ArcGIS    │  ──request───>  ┌──────┐   ┌──────┐   ┌──────┐
-   │  (item_id/  │                 │Orch 1│   │Orch 2│   │Orch N│
-   │  layer_idx) │                 │      │   │      │   │      │
-   └─────────────┘                 └──┬───┘   └──┬───┘   └──┬───┘
-                                      │          │          │
-   ┌─────────────┐                    │    dispatches       │
-   │  Future B2B │                    v          v          v
-   │  (???)      │                 ┌─────────────────────────────┐
-   └─────────────┘                 │       rmhdagworker          │
-                                   │       (workers N+)          │
-                                   └─────────────┬───────────────┘
-                                                 │
-                     <────callback────           │ produces
-                                                 v
-                                   ┌─────────────────────────────┐
-                                   │      GeospatialAsset        │
-                                   │        (rmhgeoapi)          │
-                                   └─────────────────────────────┘
+   ┌─────────────┐         ┌──────────────┐
+   │     DDH     │──req──> │  Function App│──HTTP──> ┌──────┐ ┌──────┐ ┌──────┐
+   │  (dataset/  │         │  (read-only  │          │Orch 1│ │Orch 2│ │Orch N│
+   │  resource/  │         │   ACL proxy) │          │      │ │      │ │      │
+   │  version)   │         └──────────────┘          └──┬───┘ └──┬───┘ └──┬───┘
+   └─────────────┘                                      │        │        │
+                                                        │  dispatches     │
+   ┌─────────────┐                                      v        v        v
+   │   ArcGIS    │──req──> (same gateway)            ┌─────────────────────────┐
+   │  (item_id/  │                                   │      rmhdagworker       │
+   │  layer_idx) │                                   │      (workers N+)       │
+   └─────────────┘                                   └──────────┬──────────────┘
+                                                                │
+   ┌─────────────┐                                    callback  │ produces
+   │  Future B2B │──req──> (same gateway)                       v
+   │  (???)      │                                   ┌─────────────────────────┐
+   └─────────────┘                                   │    GeospatialAsset      │
+                                                     │    (PostgreSQL)         │
+                                                     └─────────────────────────┘
 ```
 
 ### 1.4 Core Design Principles
 
-1. **Orchestrator purity** -- The orchestrator coordinates, never executes business logic.
+1. **Orchestrator authority** -- The orchestrator owns all domain mutations and DAG execution. Workers execute tasks. The Gateway is a read-only ACL proxy -- it never writes to the database.
 2. **Worker idempotency** -- Any task can be retried safely; workers handle duplicate delivery.
 3. **State lives in Postgres** -- Workers are stateless; all durable state is in the database.
-4. **Repository pattern** -- All database access goes through repository classes. No raw `psycopg.connect` outside the infrastructure layer.
+4. **Repository pattern** -- All database access goes through repository classes. No raw `psycopg.connect` outside the infrastructure layer. Orchestrator repositories have full CRUD authority. Gateway repositories are read-only (query repos only).
 5. **Pydantic is the schema** -- Models are the single source of truth for data structures. All serialization crosses boundaries via `.model_dump()` / `.model_validate()`.
 6. **Explicit over implicit** -- Dependencies, queues, and handlers are declared in YAML. No magic.
 7. **Fail fast, recover gracefully** -- Errors surface immediately; system resumes from last known state.
@@ -107,7 +100,7 @@ Azure App Service Environment (ASE) runs multiple container instances for high a
 └─────────────────────────────────────────────────────────────────────────────┘
 
    Platform Function App              orchestrator-jobs Queue
-   (B2B Gateway/ACL)                  (Service Bus)
+   (ACL Proxy, read-only)             (Service Bus)
          │                                   │
          │  POST /platform/submit            │
          v                                   │
@@ -326,11 +319,11 @@ Requests and Jobs are separate entities. B2B applications interact only with req
 
 **Flow**:
 1. B2B submits job request with their identity + parameters
-2. Gateway generates `request_id` (UUID), returns immediately
-3. Gateway queues job with `request_id` as internal `correlation_id`
-4. Orchestrator claims job, creates internal `job_id`
-5. B2B polls by `request_id` -- Gateway translates to internal lookup
-6. B2B receives status/result -- never sees `job_id`
+2. Gateway generates `request_id` (UUID), forwards request to orchestrator HTTP API
+3. Orchestrator creates asset, version, and DAG job atomically; stores `request_id` as `correlation_id`
+4. Gateway returns `request_id` to B2B caller
+5. B2B polls by `request_id` -- Gateway forwards to orchestrator status endpoint, filters response
+6. B2B receives status/result -- never sees `job_id`, node states, or orchestrator internals
 
 ---
 
@@ -1490,7 +1483,7 @@ Verified in Azure (09 FEB 2026) using `flaky_echo` handler with 50% failure rate
 
 ### 13.1 Anti-Corruption Layer
 
-The Platform Function App serves as an Anti-Corruption Layer (ACL) between external B2B systems and the internal DAG orchestrator. External systems use different protocols, auth methods, and data formats. The ACL normalizes these into a clean internal domain model.
+The Platform Function App serves as a read-only Anti-Corruption Layer (ACL) proxy between external B2B systems and the internal DAG orchestrator. External systems use different protocols, auth methods, and data formats. The ACL normalizes these into a clean internal domain model and forwards mutations to the orchestrator's HTTP API. The gateway never writes to the database.
 
 ```
 External Systems                    Internal Systems
@@ -1786,19 +1779,21 @@ WHERE platform_id = 'ddh'
 
 ### 13.5 Field Ownership
 
-| Concern | Gateway / Platform API | Orchestrator |
-|---------|------------------------|--------------|
-| Asset creation | Creates GeospatialAsset | Never creates |
-| Asset deletion | Soft-deletes | Never deletes |
-| Version creation | Creates AssetVersion on submit | Never creates |
-| Approval state | Updates on approve/reject | Never touches |
-| Clearance state | Updates on approve | Never touches |
-| Processing state | Never touches | Updates (queued → processing → completed/failed) |
-| Content hash | Never touches | Updates on job completion |
-| Job linkage | Never touches | Updates current_job_id on AssetVersion |
-| Service outputs | Never touches | Updates table_name, blob_path, stac IDs on completion |
+The orchestrator is the sole write authority for all domain entities. The gateway is a read-only ACL proxy.
 
-**The boundary**: Gateway manages **business state** (approval, clearance, identity). Orchestrator manages **execution state** (processing, job linkage, service outputs).
+| Concern | Orchestrator (domain authority) | Gateway |
+|---------|-------------------------------|---------|
+| Asset creation | Creates GeospatialAsset via `asset_service` | Never writes |
+| Asset deletion | Soft-deletes via `asset_service` | Never writes |
+| Version creation | Creates AssetVersion on submit | Never writes |
+| Approval state | Updates on approve/reject (via HTTP API) | Proxies request |
+| Clearance state | Updates on clearance change (via HTTP API) | Proxies request |
+| Processing state | Updates (queued → processing → completed/failed) | Never writes |
+| Content hash | Updates on job completion | Never writes |
+| Job linkage | Sets current_job_id atomically with job creation | Never writes |
+| Service outputs | Updates table_name, blob_path, stac IDs on completion | Never writes |
+
+**The boundary**: The orchestrator owns **all mutations** (both business state and execution state). The gateway **reads and proxies** -- it can query any entity but never writes directly to the database. This provides a security boundary: a compromised gateway cannot corrupt domain state.
 
 ### 13.6 Service Artifacts & Multi-Workflow Lifecycle
 
@@ -1836,7 +1831,7 @@ AssetVersion ordinal=0, label="V1"
             External-facing URLs now exist.
 ```
 
-Key insight: **approval does not create artifacts -- it gates access to them.** The internal artifacts exist from the moment ETL completes. Approval flips a state that the routing layer checks. Only public clearance triggers additional work (ADF export), and that's modeled as "gateway queues another DAG job."
+Key insight: **approval does not create artifacts -- it gates access to them.** The internal artifacts exist from the moment ETL completes. Approval flips a state that the routing layer checks. Only public clearance triggers additional work (ADF export), and that's modeled as "orchestrator queues another DAG job when the approval + clearance transition occurs."
 
 For OUO: submit → ETL → approve → done (two steps, one DAG job).
 For Public: submit → ETL → approve → ADF export → done (three steps, two DAG jobs).
@@ -1899,29 +1894,30 @@ Cons:
 
 **Current recommendation**: Start with Option A. The internal/external split is predictable -- every asset has at most one internal set and optionally one external set. If the topology grows more complex later (multiple export targets, multiple formats per version), introduce the child entity then. Premature abstraction costs more than a future migration.
 
-#### 13.6.4 Gateway-Orchestrator Relay Pattern
+#### 13.6.4 Orchestrator Domain Authority Pattern
 
-The gateway and orchestrator hand off responsibility cleanly at each lifecycle stage:
+The orchestrator owns all mutations. The gateway proxies B2B requests and reads query results.
 
 ```
 Stage 1 (Submit):
-  Gateway:       Creates AssetVersion (processing_state=queued)
-                 Queues DAG job "raster_ingest"
-  Orchestrator:  Runs ETL → writes blob_path, table_name, stac IDs
-                 Sets processing_state=completed
+  Gateway:       Generates request_id, forwards to orchestrator HTTP API
+  Orchestrator:  Creates GeospatialAsset + AssetVersion + DAG job atomically
+                 Runs ETL → writes blob_path, table_name, stac IDs
+                 Calls asset_service.on_processing_completed() → sets processing_state=completed
 
 Stage 2 (Approve):
-  Gateway:       Sets approval_state=approved, clearance_state=ouo|public
-                 If public: queues DAG job "adf_export"
+  Gateway:       Proxies approve/reject request to orchestrator HTTP API
+  Orchestrator:  Sets approval_state=approved via asset_service
+                 If clearance=public: queues DAG job "adf_export"
 
 Stage 3 (ADF Export, if public):
   Orchestrator:  Runs ADF workflow → writes external_blob_path, adf_run_id
-  Gateway:       External URLs now resolvable
+                 External URLs now resolvable
 ```
 
-The orchestrator never makes business decisions (approve, set clearance). The gateway never does heavy compute (ETL, ADF export). When the gateway needs work done, it queues a DAG job. When the orchestrator finishes, the gateway takes over for the next business decision.
+The gateway never writes to the database -- it proxies all mutations to the orchestrator's HTTP API and filters responses for B2B consumption. The orchestrator handles both business decisions (approve, clearance) and execution (ETL, ADF export) through its service layer, keeping domain logic in one place.
 
-If future workflows are needed (e.g., ADF reversal for public→ouo downgrade, STAC re-registration), the same pattern applies: gateway makes the business decision, queues the work, orchestrator executes it. All jobs trace back to the same AssetVersion via `asset_id + version_ordinal`.
+All jobs trace back to the same AssetVersion via `asset_id + version_ordinal`. The `current_job_id` on AssetVersion is set atomically when the orchestrator creates the job, eliminating the broken linkage that occurred when the gateway wrote a Service Bus message_id instead of the real job_id.
 
 ### 13.7 Callback Architecture
 
@@ -1975,9 +1971,12 @@ This enables B2B apps to trace back from STAC catalog to their original request 
 
 ### 14.1 Role and Purpose
 
-The Function App is a lightweight Azure Functions deployment (~50MB) serving as the B2B Gateway and ACL. It handles job submission, status queries, and HTTP proxying to the Docker-based orchestrator and workers.
+The Function App is a lightweight Azure Functions deployment (~50MB) serving as a **read-only ACL proxy**. It forwards B2B mutation requests to the orchestrator's HTTP API, serves read-only queries from its own DB connection, and filters responses to hide internal details.
 
-**Critical principle**: B2B applications know NOTHING about internal processes. They submit requests and poll for status using `request_id` -- they never see `job_id`, node states, or orchestrator internals.
+**Critical principles**:
+- B2B applications know NOTHING about internal processes. They submit requests and poll for status using `request_id` -- they never see `job_id`, node states, or orchestrator internals.
+- The Gateway **never writes to the database**. All mutations (submit, approve, reject, clearance) are forwarded to the orchestrator via HTTP proxy. Read-only queries (list assets, get status) use the gateway's own DB connection for performance.
+- A compromised gateway cannot corrupt domain state -- it can only proxy requests to the orchestrator, which enforces its own validation.
 
 ### 14.2 Endpoint Summary
 
@@ -2019,20 +2018,190 @@ The Function App is a lightweight Azure Functions deployment (~50MB) serving as 
 
 Endpoints are organized into blueprints:
 
-| Blueprint | File | Endpoints |
-|-----------|------|-----------|
-| Gateway | `function/blueprints/gateway_bp.py` | `/platform/*`, `/gateway/*` |
-| Status | `function/blueprints/status_bp.py` | `/status/*` |
-| Admin | `function/blueprints/admin_bp.py` | `/admin/*` |
-| Proxy | `function/blueprints/proxy_bp.py` | `/proxy/*` |
+| Blueprint | File | Endpoints | DB Access |
+|-----------|------|-----------|-----------|
+| Platform | `function/blueprints/platform_bp.py` | `/platform/*` (B2B submit + poll) | Proxy to orchestrator (mutations), read-only (status) |
+| Asset | `function/blueprints/asset_bp.py` | `/assets/*` (queries + admin actions) | Read-only queries; mutations proxy to orchestrator |
+| Gateway | `function/blueprints/gateway_bp.py` | `/gateway/*` (direct job submission) | Proxy to orchestrator |
+| Status | `function/blueprints/status_bp.py` | `/status/*` | Read-only |
+| Admin | `function/blueprints/admin_bp.py` | `/admin/*` | Read-only |
+| Proxy | `function/blueprints/proxy_bp.py` | `/proxy/*` | HTTP forwarding |
 
-The `/api/ops/*` endpoints are for development debugging only and will be removed before UAT.
+All mutation endpoints (submit, approve, reject, clearance, delete) forward to the orchestrator via HTTP proxy. Read-only endpoints (list assets, get status, get versions) query the gateway's own DB connection for performance.
 
 ---
 
-## 15. Deployment & Infrastructure
+## 15. Execution Models
 
-### 15.1 Azure Resources
+The orchestrator supports two execution models. Every operation in the system falls into one of these categories.
+
+### 15.1 DAG Workflows
+
+Multi-step, asynchronous, fault-tolerant execution via the orchestration loop.
+
+```
+Gateway ──> Orchestrator HTTP API ──> asset_service.submit() ──> DAG Job
+                                          │
+                               Orchestrator Loop ──> Service Bus ──> Worker ──> Callback
+                                          │
+                                          │ (retry, timeout, fan-out, event logging)
+                                          │
+                                      PostgreSQL (job/node/asset state)
+```
+
+**Lifecycle**: B2B submit → Gateway proxy → Orchestrator creates asset + version + job → queue → claim → create nodes → evaluate DAG → dispatch → execute → callback → evaluate → complete → `asset_service.on_processing_completed()`.
+
+**Properties**:
+- Async: caller submits and polls for result
+- Multi-step: arbitrary DAG of dependent nodes
+- Fault-tolerant: automatic retry, timeout detection, crash recovery
+- Observable: per-node event trail, timeline API, job status
+- Resource-flexible: nodes route to worker queues by handler type (light → `functionapp-tasks`, heavy → `container-tasks`)
+
+### 15.2 Direct Commands
+
+Synchronous, single-operation execution on the orchestrator's HTTP API.
+
+```
+Gateway ──> proxy_bp ──> Orchestrator /api/v1/commands/{name} ──> response
+                                  │
+                                  │ (single event logged)
+                                  │
+                              PostgreSQL (direct read/write)
+```
+
+**Lifecycle**: Request → proxy → execute → respond.
+
+**Properties**:
+- Synchronous: caller gets immediate response
+- Single logical operation: may touch multiple tables/schemas, but is one conceptual action
+- No automatic retry: caller retries on failure
+- Idempotent: safe to retry (same as DAG handlers)
+- Observable: single `JobEvent` audit record per execution (not per-step)
+- Lightweight: no Service Bus, no worker dispatch, no node state machine
+
+### 15.3 Selection Criteria
+
+Use this table to decide which execution model fits an operation:
+
+| Criterion | DAG Workflow | Direct Command |
+|-----------|:---:|:---:|
+| **Duration** | > 30 seconds | < 10 seconds |
+| **Compute** | Heavy (GDAL, rasterio, network I/O) | Lightweight DB reads/writes |
+| **Steps** | Multi-step with dependencies | Single logical operation |
+| **Failure granularity** | Per-step retry needed | All-or-nothing acceptable |
+| **Caller feedback** | Fire-and-forget + poll | Immediate response expected |
+| **Audit trail** | Per-node event timeline | Single audit event sufficient |
+| **Execution host** | Worker (needs GDAL, large memory) | Orchestrator (has connection pool, pgstac access) |
+| **Examples** | Raster ingest, vector ETL, ADF export | Metadata publish, bulk status update, schema migration |
+
+**Rule of thumb**: If it needs the worker image (GDAL/rasterio), it's a DAG workflow. If it's DB writes the admin expects an immediate answer for, it's a direct command.
+
+### 15.4 Architecture Constraints
+
+Both models share these guarantees:
+
+1. **Idempotent** — Safe to call twice with the same inputs.
+2. **Event-logged** — Every execution produces at least one audit record via `EventService`.
+3. **Pydantic-validated** — All inputs and outputs cross boundaries via Pydantic models.
+4. **Repository pattern** — All database access goes through repository classes.
+
+Direct commands have additional constraints:
+
+5. **No Service Bus** — Commands never publish to or consume from queues.
+6. **No worker dispatch** — Commands execute entirely within the orchestrator process.
+7. **Caller-managed retry** — The orchestrator does not retry failed commands automatically. The caller (gateway or admin) decides whether to retry.
+8. **Timeout is HTTP** — Standard HTTP request timeout applies (not the orchestrator's node timeout detection).
+
+### 15.5 Orchestrator API Namespace
+
+The orchestrator's FastAPI router uses namespacing to distinguish concerns:
+
+| Prefix | Purpose | Execution Model |
+|--------|---------|-----------------|
+| `/api/v1/jobs/*` | Job CRUD, status, submission | DAG (async) |
+| `/api/v1/workflows/*` | Workflow definitions | Read-only |
+| `/api/v1/callbacks/*` | Worker result callbacks | DAG (internal) |
+| `/api/v1/commands/*` | Direct command execution | Command (sync) |
+| `/api/v1/bootstrap/*` | Schema management | Command (sync) |
+
+The `/api/v1/commands/` namespace is the entry point for all direct command operations. Each command is a POST endpoint that:
+1. Validates input via Pydantic schema
+2. Executes the operation (DB writes, pgstac updates, etc.)
+3. Logs a single audit event
+4. Returns the result synchronously
+
+### 15.6 Gateway vs Orchestrator Responsibility Split
+
+The orchestrator is the **sole write authority** for all domain entities. The gateway is a **read-only ACL proxy**.
+
+- **Orchestrator owns all mutations.** Business domain writes (submit, approve, reject, clearance), execution state (processing, job linkage, service outputs), and operational commands (metadata projection, schema migrations) all run on the orchestrator. Business logic lives in the service layer (`asset_service`, `job_service`) which the orchestrator's HTTP API and DAG loop both use.
+- **Gateway reads and proxies.** B2B mutation requests are forwarded to the orchestrator via HTTP. Read-only queries (list assets, get versions, poll status) use the gateway's own DB connection for performance. The gateway never writes to the database.
+
+```
+                    ┌──────────────────────────────────────────────────┐
+                    │              Function App Gateway                 │
+                    │              (Azure Functions — read-only proxy)  │
+                    └─────────┬───────────┬───────────┬────────────────┘
+                              │           │           │
+           B2B Submit +       │  Read-only│           │  Direct
+           Mutations          │  Queries  │           │  Commands
+           (proxy)            │  (local)  │           │  (proxy)
+                              │           │           │
+                              v           v           v
+                    ┌───────────┐ ┌────────────┐ ┌──────────────────┐
+                    │platform_bp│ │ asset_bp   │ │  proxy_bp         │
+                    │           │ │ status_bp  │ │  → orchestrator   │
+                    │ HTTP fwd  │ │ admin_bp   │ │  /api/v1/commands/ │
+                    │ to orch   │ │            │ │                    │
+                    │ /api/v1/* │ │ Read-only  │ │  Sync HTTP         │
+                    │ endpoints │ │ DB queries │ │  forwarding        │
+                    └───────────┘ └────────────┘ └──────────────────┘
+                              │                         │
+                              └───────────┬─────────────┘
+                                          v
+                    ┌──────────────────────────────────────────────────┐
+                    │              DAG Orchestrator                     │
+                    │              (Domain Authority + DAG Execution)   │
+                    ├──────────────────────────────────────────────────┤
+                    │  HTTP API:                                        │
+                    │    /api/v1/assets/*    (business domain CRUD)     │
+                    │    /api/v1/submit      (asset submission)         │
+                    │    /api/v1/status/*    (detailed status)          │
+                    │    /api/v1/commands/*  (direct commands)          │
+                    │    /api/v1/callbacks/* (worker results)           │
+                    │                                                   │
+                    │  DAG Loop:                                        │
+                    │    Queue consumer → job creation → node dispatch  │
+                    │    Result processing → job completion callbacks   │
+                    │                                                   │
+                    │  Service Layer:                                   │
+                    │    asset_service  (business domain logic)         │
+                    │    job_service    (execution lifecycle)           │
+                    │    event_service  (audit trail)                   │
+                    └──────────────────────────────────────────────────┘
+```
+
+**Security boundary**: A compromised gateway cannot corrupt domain state. It can only forward requests to the orchestrator's HTTP API, which enforces its own validation, state machine checks, and optimistic locking. The gateway has no DB write credentials.
+
+### 15.7 Future Command Candidates
+
+Operations that fit the direct command model (not yet implemented):
+
+| Command | What It Does | Why Not DAG |
+|---------|-------------|-------------|
+| `metadata.publish` | Project layer_metadata → STAC + layer_catalog | 3 SQL writes, < 2s, admin wants immediate feedback |
+| `metadata.unpublish` | Remove projections | 2 SQL deletes, < 1s |
+| `metadata.publish_external` | Project to external B2C database | Same as publish but different connection |
+| `asset.reindex` | Rebuild STAC items from existing data | Read + write, no GDAL needed |
+| `schema.migrate` | Add columns to existing tables | Already exists as bootstrap endpoint |
+| `cache.invalidate` | Clear workflow cache across instances | In-memory operation |
+
+---
+
+## 16. Deployment & Infrastructure
+
+### 16.1 Azure Resources
 
 | Resource | Name | Purpose |
 |----------|------|---------|
@@ -2047,7 +2216,7 @@ The `/api/ops/*` endpoints are for development debugging only and will be remove
 | **Storage (Bronze)** | `rmhazuregeo` | Raw uploads |
 | **Storage (Silver)** | `rmhstorage123` | Processed data |
 
-### 15.2 Two-Image Architecture
+### 16.2 Two-Image Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -2087,7 +2256,7 @@ The `/api/ops/*` endpoints are for development debugging only and will be remove
 | **HTTP Server** | FastAPI (full) | aiohttp (health only) |
 | **Scaling** | 1+ instances (competing consumers) | Auto-scale 0-N |
 
-### 15.3 Build & Deploy
+### 16.3 Build & Deploy
 
 ```bash
 # Build orchestrator (lightweight ~250MB)
@@ -2119,7 +2288,7 @@ az webapp restart --name rmhdagworker --resource-group rmhazure_rg
 
 A convenience deploy script at `scripts/deploy.sh` handles ACR build, container config update, restart, and health check in one command.
 
-### 15.4 Environment Variables
+### 16.4 Environment Variables
 
 **Orchestrator (rmhdagmaster)**:
 
@@ -2145,7 +2314,7 @@ A convenience deploy script at `scripts/deploy.sh` handles ACR build, container 
 | `DAG_CALLBACK_URL` | `https://rmhdagmaster-.../api/v1/callbacks/task-result` | Result reporting URL |
 | `AZURE_STORAGE_ACCOUNT_NAME` | `rmhazuregeo` | Storage account for blob SAS delegation |
 
-### 15.5 Connection Details
+### 16.5 Connection Details
 
 **Database**:
 ```
@@ -2174,7 +2343,7 @@ Images:
   - rmhdagworker:v0.12.x  (worker)
 ```
 
-### 15.6 RBAC Requirements
+### 16.6 RBAC Requirements
 
 **Orchestrator Identity (`rmhpgflexadmin` UMI)**:
 
@@ -2194,7 +2363,7 @@ Images:
 
 **Azure RBAC Note**: Management plane roles (Contributor, Owner) do NOT include data plane access (Storage Blob Data Reader, Storage Blob Delegator). These must be explicitly assigned. See [Azure data plane vs management plane](https://learn.microsoft.com/en-us/azure/role-based-access-control/role-definitions#data-actions).
 
-### 15.7 Deployment Topology
+### 16.7 Deployment Topology
 
 ```
                               GitHub Push
@@ -2230,7 +2399,7 @@ Images:
      └──────────────────────────┘   └──────────────────────────┘
 ```
 
-### 15.8 Migration Strategy
+### 16.8 Migration Strategy
 
 ```
 Phase 1: Parallel (Current)
@@ -2277,6 +2446,7 @@ Phase 4: Legacy Removed
 12. **Owner-scoped queries** -- Each orchestrator only touches its own jobs.
 13. **Heartbeat maintains ownership** -- Stale heartbeats trigger orphan recovery.
 14. **Every state transition is logged** -- JobEvents provide full audit trail.
+15. **Two execution models** -- DAG workflows for multi-step async processing, direct commands for synchronous lightweight operations. See Section 15.
 
 ---
 
@@ -2286,4 +2456,7 @@ Phase 4: Legacy Removed
 |----------|---------|
 | `CLAUDE.md` | Project constitution, design principles, coding standards |
 | `docs/IMPLEMENTATION.md` | Detailed implementation specs, task checklists, code patterns |
-| `docs/TODO.md` | Progress tracking and next priorities |
+| `docs/TODO.md` | Progress tracking, phase ordering, next priorities |
+| `docs/PHASE1_ASSET_SERVICE.md` | GeospatialAssetService implementation plan (Tier 4A) |
+| `docs/LAYER_METADATA_IMPL.md` | Layer metadata implementation plan (Tier 4D-4F) |
+| `docs/HEXAGONS.md` | H3 hexagonal aggregation pipeline — raster zonal stats, vector aggregation, cell connectivity graph (future, after core DAG) |

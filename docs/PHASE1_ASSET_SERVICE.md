@@ -1,7 +1,7 @@
 # Phase 1: GeospatialAssetService — Implementation Plan
 
 **Created**: 09 FEB 2026
-**Status**: Planning
+**Status**: Phase 4A + 4B COMPLETE (11 FEB 2026) — Phase 4C next
 **Tracks**: Tier 4 domain service layer
 
 ---
@@ -52,18 +52,18 @@ GeospatialAssetService
 
 ---
 
-## Step 1: Add `get_by_job_id` to AssetVersionRepository
+## Step 1: Add `get_by_job_id` to AssetVersionRepository -- DONE
 
-- [ ] **File**: `repositories/version_repo.py`
-- [ ] **Method**: `get_by_job_id(job_id: str) -> Optional[AssetVersion]`
-- [ ] Queries: `WHERE current_job_id = %s LIMIT 1`
-- [ ] Needed by processing callbacks (DAG job completes → find which version it belongs to)
+- [x] **File**: `repositories/version_repo.py`
+- [x] **Method**: `get_by_job_id(job_id: str) -> Optional[AssetVersion]`
+- [x] Queries: `WHERE current_job_id = %s LIMIT 1`
+- [x] Needed by processing callbacks (DAG job completes → find which version it belongs to)
 
 ---
 
-## Step 2: Create GeospatialAssetService
+## Step 2: Create GeospatialAssetService -- DONE
 
-- [ ] **File**: `services/asset_service.py`
+- [x] **File**: `services/asset_service.py` (~290 lines)
 
 ### Constructor
 
@@ -85,135 +85,128 @@ class GeospatialAssetService:
 
 ### Methods
 
-#### 2a: `submit_asset` — The main entry point
+#### 2a: `submit_asset` — DONE
 
-- [ ] **Signature**: `async def submit_asset(platform_id, platform_refs, data_type, version_label, workflow_id, input_params, submitted_by=None) -> Tuple[GeospatialAsset, AssetVersion, Job]`
-- [ ] Validate platform exists and is active → `ValueError` if not
-- [ ] Validate platform_refs against `platform.required_refs` → `ValueError` if missing
-- [ ] Compute `asset_id` via `GeospatialAsset.compute_asset_id()`
-- [ ] Get-or-create asset via `asset_repo.get_or_create()`
-- [ ] Check no unresolved versions via `version_repo.has_unresolved_versions()` → `ValueError` if pending
-- [ ] Get next ordinal via `version_repo.get_next_ordinal()`
-- [ ] Create AssetVersion (approval=PENDING_REVIEW, processing=QUEUED)
-- [ ] Create DAG job via `job_service.create_job(workflow_id, input_params, submitted_by)`
-- [ ] Update version with `current_job_id` and mark processing started
-- [ ] Return `(asset, version, job)`
+- [x] Validates platform, computes asset_id, get-or-create, version ordering, creates version + job
 
-#### 2b: Processing callbacks (DAG → domain)
+#### 2b: Processing callbacks — DONE
 
-- [ ] `async def on_processing_completed(job_id, artifacts: dict) -> Optional[AssetVersion]`
-  - Find version by `version_repo.get_by_job_id(job_id)`
-  - Return None if no version found (job not tied to an asset)
-  - Write artifact fields: `blob_path`, `table_name`, `stac_item_id`, `stac_collection_id`
-  - Call `version.mark_processing_completed()`
-  - Save via `version_repo.update()`
+- [x] `on_processing_completed(job_id, artifacts)` — finds version by job_id, writes artifacts, transitions state
+- [x] `on_processing_failed(job_id, error_message)` — finds version, writes error, transitions state
+- [x] Returns None for standalone jobs (not tied to an asset)
 
-- [ ] `async def on_processing_failed(job_id, error_message) -> Optional[AssetVersion]`
-  - Find version by job_id
-  - Return None if not found
-  - Call `version.mark_processing_failed(error_message)`
-  - Save via `version_repo.update()`
+#### 2c: Approval workflow — DONE
 
-#### 2c: Approval workflow
+- [x] `approve_version` / `reject_version` — with optimistic locking
 
-- [ ] `async def approve_version(asset_id, version_ordinal, reviewer) -> AssetVersion`
-  - Get version → `ValueError` if not found
-  - Call `version.mark_approved(reviewer)` (model validates state transition)
-  - Save via `version_repo.update()` → raise on version conflict
+#### 2d: Clearance workflow — DONE
 
-- [ ] `async def reject_version(asset_id, version_ordinal, reviewer, reason) -> AssetVersion`
-  - Get version → `ValueError` if not found
-  - Call `version.mark_rejected(reviewer, reason)`
-  - Save via `version_repo.update()`
+- [x] `mark_cleared` (UNCLEARED → OUO) / `mark_public` (OUO → PUBLIC)
 
-#### 2d: Clearance workflow
+#### 2e: Reprocessing — DONE
 
-- [ ] `async def mark_cleared(asset_id, actor) -> GeospatialAsset`
-  - Get asset → `ValueError` if not found
-  - Call `asset.mark_cleared(actor)` (model validates UNCLEARED → OUO)
-  - Save via `asset_repo.update()`
+- [x] `reprocess_version` — increments revision, creates new DAG job
 
-- [ ] `async def mark_public(asset_id, actor) -> GeospatialAsset`
-  - Get asset → `ValueError` if not found
-  - Call `asset.mark_public(actor)` (model validates OUO → PUBLIC)
-  - Save via `asset_repo.update()`
+#### 2f: Query methods — DONE
 
-#### 2e: Reprocessing
-
-- [ ] `async def reprocess_version(asset_id, version_ordinal, workflow_id, input_params, submitted_by=None) -> Tuple[AssetVersion, Job]`
-  - Get version → `ValueError` if not found
-  - Call `version.start_reprocessing(job_id=None)` (increments revision, resets fields)
-  - Create new DAG job via `job_service.create_job()`
-  - Update version with new `current_job_id`
-  - Save via `version_repo.update()`
-  - Return `(version, job)`
-
-#### 2f: Query methods
-
-- [ ] `async def get_asset(asset_id) -> Optional[GeospatialAsset]`
-- [ ] `async def get_version(asset_id, version_ordinal) -> Optional[AssetVersion]`
-- [ ] `async def get_latest_version(asset_id) -> Optional[AssetVersion]`
-  - Calls `version_repo.get_latest_approved(asset_id)`
-  - This is the `version=latest` resolution for service URLs
-- [ ] `async def list_assets(platform_id, include_deleted=False) -> List[GeospatialAsset]`
-- [ ] `async def list_versions(asset_id) -> List[AssetVersion]`
-- [ ] `async def soft_delete_asset(asset_id, actor) -> bool`
+- [x] `get_asset`, `get_version`, `get_latest_version`, `list_assets`, `list_versions`, `soft_delete_asset`
 
 ---
 
-## Step 3: Export from services module
+## Step 3: Export from services module -- DONE
 
-- [ ] **File**: `services/__init__.py`
-- [ ] Add import and `__all__` entry for `GeospatialAssetService`
-
----
-
-## Step 4: Unit Tests
-
-- [ ] **File**: `tests/test_asset_service.py`
-- [ ] Pattern: Mock the repos, test business logic in isolation
-
-### Test Cases (~20 tests)
-
-**Submit asset:**
-- [ ] Happy path: new platform + new asset + first version → returns (asset, version, job)
-- [ ] Idempotent: same platform_refs → same asset_id, new version ordinal
-- [ ] Platform not found → ValueError
-- [ ] Platform inactive → ValueError
-- [ ] Missing required refs → ValueError
-- [ ] Unresolved version exists → ValueError (version ordering)
-
-**Processing callbacks:**
-- [ ] on_processing_completed writes artifacts and transitions state
-- [ ] on_processing_failed writes error and transitions state
-- [ ] on_processing_completed with unknown job_id → returns None (no-op)
-
-**Approval:**
-- [ ] approve_version transitions PENDING_REVIEW → APPROVED
-- [ ] reject_version transitions PENDING_REVIEW → REJECTED with reason
-- [ ] approve already rejected → ValueError (from model)
-- [ ] version not found → ValueError
-
-**Clearance:**
-- [ ] mark_cleared transitions UNCLEARED → OUO
-- [ ] mark_public transitions OUO → PUBLIC
-- [ ] mark_public from UNCLEARED → ValueError (from model)
-
-**Reprocessing:**
-- [ ] reprocess increments revision, creates new job
-- [ ] reprocess from QUEUED → ValueError (not terminal)
-
-**Queries:**
-- [ ] get_latest_version returns highest approved ordinal
-- [ ] soft_delete_asset marks deleted
+- [x] **File**: `services/__init__.py`
+- [x] Added import and `__all__` entry for `GeospatialAssetService`
 
 ---
 
-## Verification
+## Step 4: Unit Tests -- DONE
 
-1. `pytest tests/test_asset_service.py -v` — new tests pass
-2. `pytest tests/ -v` — all existing tests still pass (130+)
-3. No changes to main.py or orchestrator yet — service is standalone
+- [x] **File**: `tests/test_asset_service.py` — 24 tests, all passing
+- [x] Pattern: Mock repos, test business logic in isolation
+
+All 24 planned test cases implemented: submit (6), callbacks (4), approval (4), clearance (4), reprocessing (3), queries (3).
+
+---
+
+## Prerequisites -- ALL MET
+
+- [x] **FunctionRepository write support**: `execute_write()` + `execute_write_returning()` added to `function/repositories/base.py`. Done 11 FEB.
+- [x] **Gateway config aligned**: `function/config.py` aligned with orchestrator env vars (`POSTGRES_*`), delegates to `infrastructure/auth` for managed identity. Done 11 FEB.
+- [x] **Gateway RBAC**: System-assigned identity for Service Bus Data Sender, UMI for PostgreSQL read/write. Done 11 FEB.
+- [ ] **Gateway deployment**: Function App settings configured but no functions published yet. Needs `func azure functionapp publish rmhdaggateway`.
+
+---
+
+## Verification -- PASSED
+
+1. `pytest tests/test_asset_service.py -v` — 24 tests pass
+2. `pytest tests/ -v` — 158 tests pass (134 existing + 24 new)
+3. No changes to main.py; orchestrator only changed to pass `asset_id` through job creation path
+
+---
+
+---
+
+## Phase 4B: Gateway Business API -- DONE (11 FEB 2026)
+
+### New Files (3)
+
+| # | File | Purpose |
+|---|------|---------|
+| 1 | `function/repositories/asset_query_repo.py` | Sync CRUD for gateway (platform, asset, version) |
+| 2 | `function/blueprints/platform_bp.py` | B2B submit + status polling |
+| 3 | `function/blueprints/asset_bp.py` | Asset queries, approval, clearance, soft delete (submit removed) |
+
+### Modified Files (8)
+
+| # | File | Change |
+|---|------|--------|
+| 1 | `core/models/job.py` | Added `asset_id: Optional[str]` + index |
+| 2 | `core/models/job_queue_message.py` | Added `asset_id: Optional[str]` |
+| 3 | `repositories/job_repo.py` | Added `asset_id` to create/create_with_owner/_row_to_job |
+| 4 | `services/job_service.py` | Added `asset_id` param to `create_job()` |
+| 5 | `orchestrator/loop.py` | Passes `message.asset_id` to `create_job()` |
+| 6 | `function/repositories/job_query_repo.py` | Added `asset_id` to SELECT queries |
+| 7 | `function/models/requests.py` | Added `request_id` to AssetSubmitRequest |
+| 8 | `function/models/responses.py` | Added `request_id` to AssetSubmitResponse |
+
+### Key Design: correlation_id vs asset_id
+
+- `correlation_id = request_id` — B2B clients poll `GET /api/platform/status/{request_id}`
+- `asset_id = computed_hash` — job→asset tracing via `WHERE asset_id = %s`
+- Standalone jobs (no asset): `asset_id = NULL`, no impact
+
+---
+
+## Phase 4C: DAG Callback Wiring -- NOT STARTED
+
+### What It Does
+
+When a DAG job completes or fails, the orchestrator calls `asset_service.on_processing_completed/failed` to update the asset version with artifacts or error state.
+
+### Hook Point
+
+`orchestrator/loop.py:_check_job_completion()` (line ~1198):
+
+```
+COMPLETED → asset_service.on_processing_completed(job_id, result_data)
+FAILED    → asset_service.on_processing_failed(job_id, error_message)
+```
+
+The service methods already exist and are tested. The wiring requires:
+
+1. Instantiate `GeospatialAssetService` in the Orchestrator constructor (needs pool + job_service)
+2. After `job_service.complete_job()` → call `asset_service.on_processing_completed(job.job_id, result_data)`
+3. After `job_service.fail_job()` → call `asset_service.on_processing_failed(job.job_id, error)`
+4. Both return `Optional[AssetVersion]` — None for standalone jobs (no-op, no crash)
+
+### Files to Modify (2)
+
+| File | Change |
+|------|--------|
+| `orchestrator/loop.py` | Import + instantiate GeospatialAssetService; call callbacks in `_check_job_completion()` |
+| `tests/test_integration.py` | Add test for callback wiring (mock asset_service, verify calls) |
 
 ---
 

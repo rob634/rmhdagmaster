@@ -187,6 +187,77 @@ class ErrorResponse(BaseModel):
     code: Optional[str] = Field(default=None, description="Error code for programmatic handling")
 
 
+class AssetResponse(BaseModel):
+    """Geospatial asset details."""
+
+    model_config = ConfigDict()
+
+    asset_id: str = Field(..., description="Deterministic asset identifier")
+    platform_id: str = Field(..., description="B2B platform")
+    platform_refs: Dict[str, Any] = Field(default_factory=dict, description="Identity refs")
+    data_type: str = Field(..., description="'raster' or 'vector'")
+    clearance_state: str = Field(..., description="uncleared / ouo / public")
+    is_deleted: bool = Field(default=False)
+    created_at: datetime = Field(...)
+    updated_at: datetime = Field(...)
+    version: int = Field(..., description="Optimistic locking version")
+
+
+class VersionResponse(BaseModel):
+    """Asset version details."""
+
+    model_config = ConfigDict()
+
+    asset_id: str = Field(...)
+    version_ordinal: int = Field(...)
+    version_label: Optional[str] = Field(default=None)
+    approval_state: str = Field(...)
+    processing_state: str = Field(...)
+    current_job_id: Optional[str] = Field(default=None)
+    revision: int = Field(default=0)
+    blob_path: Optional[str] = Field(default=None)
+    table_name: Optional[str] = Field(default=None)
+    stac_item_id: Optional[str] = Field(default=None)
+    stac_collection_id: Optional[str] = Field(default=None)
+    created_at: datetime = Field(...)
+    updated_at: datetime = Field(...)
+    version: int = Field(...)
+
+
+class AssetSubmitResponse(BaseModel):
+    """Response after successful asset submission."""
+
+    model_config = ConfigDict()
+
+    asset_id: str = Field(..., description="Deterministic asset identifier")
+    version_ordinal: int = Field(..., description="Version number created")
+    request_id: Optional[str] = Field(default=None, description="B2B request ID (use to poll job status)")
+    message_id: str = Field(..., description="Service Bus message ID for DAG job")
+    workflow_id: str = Field(...)
+    status: str = Field(default="queued")
+    created: bool = Field(..., description="True if asset was newly created")
+
+
+class AssetListResponse(BaseModel):
+    """Response for asset listing."""
+
+    model_config = ConfigDict()
+
+    assets: List[AssetResponse] = Field(...)
+    total: int = Field(...)
+    limit: int = Field(...)
+    offset: int = Field(...)
+
+
+class VersionListResponse(BaseModel):
+    """Response for version listing."""
+
+    model_config = ConfigDict()
+
+    versions: List[VersionResponse] = Field(...)
+    asset_id: str = Field(...)
+
+
 __all__ = [
     "JobSubmitResponse",
     "BatchSubmitResponse",
@@ -197,4 +268,9 @@ __all__ = [
     "HealthResponse",
     "ProxyResponse",
     "ErrorResponse",
+    "AssetResponse",
+    "VersionResponse",
+    "AssetSubmitResponse",
+    "AssetListResponse",
+    "VersionListResponse",
 ]

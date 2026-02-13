@@ -17,10 +17,12 @@ from function.repositories.base import FunctionRepository
 from function.repositories.job_query_repo import JobQueryRepository
 from function.repositories.node_query_repo import NodeQueryRepository
 from function.repositories.event_query_repo import EventQueryRepository
+from function.repositories.asset_query_repo import AssetQueryRepository
 
 __all__ = [
     "FunctionRepository",
     "JobQueryRepository",
     "NodeQueryRepository",
     "EventQueryRepository",
+    "AssetQueryRepository",
 ]

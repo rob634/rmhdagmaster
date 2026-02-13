@@ -56,6 +56,8 @@ class Job(JobData):
         # Multi-orchestrator indexes
         ("idx_dag_jobs_owner", ["owner_id"]),
         ("idx_dag_jobs_heartbeat", ["owner_heartbeat_at"]),
+        # Asset tracing
+        ("idx_dag_jobs_asset", ["asset_id"]),
     ]
 
     # Status
@@ -124,6 +126,13 @@ class Job(JobData):
         default=None,
         max_length=64,
         description="External correlation ID for tracing"
+    )
+
+    # Asset tracing (nullable - standalone jobs have no asset)
+    asset_id: Optional[str] = Field(
+        default=None,
+        max_length=64,
+        description="Geospatial asset ID this job processes (NULL for standalone jobs)"
     )
 
     # Multi-orchestrator ownership
