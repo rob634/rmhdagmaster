@@ -3,15 +3,14 @@
 # ============================================================================
 # EPOCH: 5 - DAG ORCHESTRATION
 # STATUS: Gateway - Asset query endpoints (read-only) + mutation proxies
-# PURPOSE: HTTP endpoints for geospatial asset queries and lifecycle admin
+# PURPOSE: HTTP endpoints for asset queries (read) and lifecycle mutations (proxy)
 # LAST_REVIEWED: 12 FEB 2026
 # ============================================================================
 """
 Asset Blueprint
 
-Read-only query endpoints served directly from gateway DB connection.
-Mutation endpoints (approve, reject, clearance, delete) are proxy stubs
-awaiting orchestrator domain endpoints (Pass 2/3).
+Read endpoints served directly from gateway DB connection.
+Mutation endpoints proxy to the orchestrator's domain API.
 NOTE: Submit lives in platform_bp.py (B2B-facing).
 
 Read endpoints (gateway-local):
@@ -22,12 +21,12 @@ Read endpoints (gateway-local):
 - GET    /api/assets/{asset_id}/versions/latest           - Get latest approved
 - GET    /api/assets/platforms                             - List platforms
 
-Mutation stubs (will proxy to orchestrator):
-- POST   /api/assets/{asset_id}/versions/{ordinal}/approve - 501 stub
-- POST   /api/assets/{asset_id}/versions/{ordinal}/reject  - 501 stub
-- POST   /api/assets/{asset_id}/clearance/cleared         - 501 stub
-- POST   /api/assets/{asset_id}/clearance/public          - 501 stub
-- DELETE /api/assets/{asset_id}                            - 501 stub
+Mutation endpoints (proxy to orchestrator):
+- POST   /api/assets/{asset_id}/versions/{ordinal}/approve - Approve version
+- POST   /api/assets/{asset_id}/versions/{ordinal}/reject  - Reject version
+- POST   /api/assets/{asset_id}/clearance/cleared         - Mark cleared
+- POST   /api/assets/{asset_id}/clearance/public          - Mark public
+- DELETE /api/assets/{asset_id}                            - Soft delete
 """
 
 import json
@@ -69,14 +68,9 @@ def _error(error: str, details: str = None, status_code: int = 400) -> func.Http
     )
 
 
-def _not_implemented(action: str, step: str) -> func.HttpResponse:
-    """Return 501 for mutation endpoints awaiting orchestrator domain API."""
-    return _error(
-        "Not implemented",
-        f"{action} is being migrated to orchestrator domain API. "
-        f"See TODO.md Phase 4B-REBUILD, step {step}.",
-        501,
-    )
+def _proxy_response(status_code: int, body: dict) -> func.HttpResponse:
+    """Relay an orchestrator response back to the caller."""
+    return _json_response(body, status_code)
 
 
 def _asset_to_response(row: dict) -> dict:
@@ -256,7 +250,7 @@ def version_get(req: func.HttpRequest) -> func.HttpResponse:
 
 
 # ============================================================================
-# APPROVAL (proxy stubs — awaiting orchestrator domain endpoints)
+# APPROVAL (proxy to orchestrator domain API)
 # ============================================================================
 
 @asset_bp.route(route="assets/{asset_id}/versions/{ordinal}/approve", methods=["POST"])
@@ -265,11 +259,25 @@ def version_approve(req: func.HttpRequest) -> func.HttpResponse:
     Approve an asset version.
 
     POST /api/assets/{asset_id}/versions/{ordinal}/approve
-
-    STUB: Returns 501 until orchestrator domain endpoint is built.
-    Will proxy to: POST {ORCHESTRATOR_BASE_URL}/api/v1/domain/assets/{id}/versions/{ord}/approve
+    Proxies to: POST {ORCHESTRATOR_BASE_URL}/api/v1/domain/assets/{id}/versions/{ord}/approve
     """
-    return _not_implemented("Version approval", "R2c")
+    from function.models.requests import ApprovalRequest
+    from function.services.orchestrator_client import OrchestratorClient
+
+    asset_id = req.route_params.get("asset_id")
+    ordinal = int(req.route_params.get("ordinal"))
+
+    try:
+        body = req.get_json()
+        request = ApprovalRequest.model_validate(body)
+    except Exception as e:
+        return _error("Validation error", str(e), 422)
+
+    client = OrchestratorClient()
+    status_code, resp_body = client.approve(
+        asset_id, ordinal, {"reviewer": request.reviewer}
+    )
+    return _proxy_response(status_code, resp_body)
 
 
 @asset_bp.route(route="assets/{asset_id}/versions/{ordinal}/reject", methods=["POST"])
@@ -278,15 +286,29 @@ def version_reject(req: func.HttpRequest) -> func.HttpResponse:
     Reject an asset version.
 
     POST /api/assets/{asset_id}/versions/{ordinal}/reject
-
-    STUB: Returns 501 until orchestrator domain endpoint is built.
-    Will proxy to: POST {ORCHESTRATOR_BASE_URL}/api/v1/domain/assets/{id}/versions/{ord}/reject
+    Proxies to: POST {ORCHESTRATOR_BASE_URL}/api/v1/domain/assets/{id}/versions/{ord}/reject
     """
-    return _not_implemented("Version rejection", "R2d")
+    from function.models.requests import ApprovalRequest
+    from function.services.orchestrator_client import OrchestratorClient
+
+    asset_id = req.route_params.get("asset_id")
+    ordinal = int(req.route_params.get("ordinal"))
+
+    try:
+        body = req.get_json()
+        request = ApprovalRequest.model_validate(body)
+    except Exception as e:
+        return _error("Validation error", str(e), 422)
+
+    client = OrchestratorClient()
+    status_code, resp_body = client.reject(
+        asset_id, ordinal, {"reviewer": request.reviewer, "reason": request.reason}
+    )
+    return _proxy_response(status_code, resp_body)
 
 
 # ============================================================================
-# CLEARANCE (proxy stubs — awaiting orchestrator domain endpoints)
+# CLEARANCE (proxy to orchestrator domain API)
 # ============================================================================
 
 @asset_bp.route(route="assets/{asset_id}/clearance/cleared", methods=["POST"])
@@ -295,11 +317,22 @@ def asset_mark_cleared(req: func.HttpRequest) -> func.HttpResponse:
     Mark asset clearance: UNCLEARED -> OUO.
 
     POST /api/assets/{asset_id}/clearance/cleared
-
-    STUB: Returns 501 until orchestrator domain endpoint is built.
-    Will proxy to: POST {ORCHESTRATOR_BASE_URL}/api/v1/domain/assets/{id}/clearance/cleared
+    Proxies to: POST {ORCHESTRATOR_BASE_URL}/api/v1/domain/assets/{id}/clearance/cleared
     """
-    return _not_implemented("Clearance update", "R2e")
+    from function.models.requests import ClearanceRequest
+    from function.services.orchestrator_client import OrchestratorClient
+
+    asset_id = req.route_params.get("asset_id")
+
+    try:
+        body = req.get_json()
+        request = ClearanceRequest.model_validate(body)
+    except Exception as e:
+        return _error("Validation error", str(e), 422)
+
+    client = OrchestratorClient()
+    status_code, resp_body = client.mark_cleared(asset_id, {"actor": request.actor})
+    return _proxy_response(status_code, resp_body)
 
 
 @asset_bp.route(route="assets/{asset_id}/clearance/public", methods=["POST"])
@@ -308,15 +341,26 @@ def asset_mark_public(req: func.HttpRequest) -> func.HttpResponse:
     Mark asset clearance: OUO -> PUBLIC.
 
     POST /api/assets/{asset_id}/clearance/public
-
-    STUB: Returns 501 until orchestrator domain endpoint is built.
-    Will proxy to: POST {ORCHESTRATOR_BASE_URL}/api/v1/domain/assets/{id}/clearance/public
+    Proxies to: POST {ORCHESTRATOR_BASE_URL}/api/v1/domain/assets/{id}/clearance/public
     """
-    return _not_implemented("Clearance update", "R2f")
+    from function.models.requests import ClearanceRequest
+    from function.services.orchestrator_client import OrchestratorClient
+
+    asset_id = req.route_params.get("asset_id")
+
+    try:
+        body = req.get_json()
+        request = ClearanceRequest.model_validate(body)
+    except Exception as e:
+        return _error("Validation error", str(e), 422)
+
+    client = OrchestratorClient()
+    status_code, resp_body = client.mark_public(asset_id, {"actor": request.actor})
+    return _proxy_response(status_code, resp_body)
 
 
 # ============================================================================
-# SOFT DELETE (proxy stub — awaiting orchestrator domain endpoint)
+# SOFT DELETE (proxy to orchestrator domain API)
 # ============================================================================
 
 @asset_bp.route(route="assets/{asset_id}", methods=["DELETE"])
@@ -324,12 +368,20 @@ def asset_delete(req: func.HttpRequest) -> func.HttpResponse:
     """
     Soft-delete an asset.
 
-    DELETE /api/assets/{asset_id}
-
-    STUB: Returns 501 until orchestrator domain endpoint is built.
-    Will proxy to: DELETE {ORCHESTRATOR_BASE_URL}/api/v1/domain/assets/{id}
+    DELETE /api/assets/{asset_id}?actor=...
+    Proxies to: DELETE {ORCHESTRATOR_BASE_URL}/api/v1/domain/assets/{id}?actor=...
     """
-    return _not_implemented("Asset deletion", "R2g")
+    from function.services.orchestrator_client import OrchestratorClient
+
+    asset_id = req.route_params.get("asset_id")
+    actor = req.params.get("actor")
+
+    if not actor:
+        return _error("Missing parameter", "'actor' query parameter is required", 400)
+
+    client = OrchestratorClient()
+    status_code, resp_body = client.delete_asset(asset_id, actor)
+    return _proxy_response(status_code, resp_body)
 
 
 # ============================================================================
