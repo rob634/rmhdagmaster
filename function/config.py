@@ -10,6 +10,8 @@
 Function App Configuration
 
 Loads configuration from environment variables with sensible defaults.
+The gateway is a read-only ACL proxy — it needs database access for
+queries and orchestrator URL for forwarding mutations.
 
 Database auth uses the same env vars and auth module as the orchestrator:
 - USE_MANAGED_IDENTITY=true → UMI token via infrastructure/auth
@@ -35,13 +37,15 @@ class FunctionConfig:
     postgres_db: str = "postgres"
     db_schema: str = "dagapp"
 
-    # Service Bus
+    # Service Bus (used by gateway_bp generic submit — NOT by platform_bp)
     service_bus_namespace: str = ""
     service_bus_connection_string: Optional[str] = None
     job_queue_name: str = ""
 
-    # Docker App URLs (for proxy)
+    # Orchestrator (domain authority — gateway proxies mutations here)
     orchestrator_url: str = "http://localhost:8000"
+
+    # Worker (for proxy health checks only)
     worker_url: str = "http://localhost:8001"
 
     # App Info
@@ -58,15 +62,16 @@ class FunctionConfig:
             postgres_port=os.environ.get("POSTGRES_PORT", "5432"),
             postgres_db=os.environ.get("POSTGRES_DB", "postgres"),
             db_schema=os.environ.get("DB_SCHEMA", "dagapp"),
-            # Service Bus
+            # Service Bus (gateway_bp generic submit only)
             service_bus_namespace=os.environ.get(
                 "SERVICE_BUS_NAMESPACE",
                 os.environ.get("SERVICE_BUS_FQDN", ""),
             ),
             service_bus_connection_string=os.environ.get("SERVICE_BUS_CONNECTION_STRING"),
             job_queue_name=os.environ.get("JOB_QUEUE_NAME", ""),
-            # Docker URLs
-            orchestrator_url=os.environ.get("ORCHESTRATOR_URL", "http://localhost:8000"),
+            # Orchestrator + Worker URLs
+            orchestrator_url=os.environ.get("ORCHESTRATOR_BASE_URL",
+                                            os.environ.get("ORCHESTRATOR_URL", "http://localhost:8000")),
             worker_url=os.environ.get("WORKER_URL", "http://localhost:8001"),
             # App Info
             version=os.environ.get("APP_VERSION", "0.9.0"),
@@ -117,8 +122,13 @@ class FunctionConfig:
 
     @property
     def has_service_bus_config(self) -> bool:
-        """Check if Service Bus is configured."""
+        """Check if Service Bus is configured (for gateway_bp generic submit)."""
         return bool(self.service_bus_namespace or self.service_bus_connection_string)
+
+    @property
+    def has_orchestrator_config(self) -> bool:
+        """Check if orchestrator URL is configured (for domain mutation proxying)."""
+        return bool(self.orchestrator_url and self.orchestrator_url != "http://localhost:8000")
 
 
 # Global config singleton

@@ -412,4 +412,5 @@ Polish, operational visibility, and production safety.
 | `VERSION_PINNING.md` | Workflow version pinning implementation (Tier 5, complete) |
 | `PHASE1_ASSET_SERVICE.md` | GeospatialAssetService implementation plan (Tier 4A) |
 | `LAYER_METADATA_IMPL.md` | Layer metadata implementation plan (Tier 4D-4F) |
+| `HEXAGONS.md` | H3 hexagonal aggregation pipeline — raster, vector, connectivity (future, after core DAG) |
 | `README.md` | Entry point for new developers |

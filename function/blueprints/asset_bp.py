@@ -2,37 +2,39 @@
 # CLAUDE CONTEXT - ASSET BLUEPRINT
 # ============================================================================
 # EPOCH: 5 - DAG ORCHESTRATION
-# STATUS: Gateway - Business domain query/admin endpoints
+# STATUS: Gateway - Asset query endpoints (read-only) + mutation proxies
 # PURPOSE: HTTP endpoints for geospatial asset queries and lifecycle admin
-# LAST_REVIEWED: 11 FEB 2026
+# LAST_REVIEWED: 12 FEB 2026
 # ============================================================================
 """
 Asset Blueprint
 
-Query and admin endpoints for geospatial asset lifecycle.
+Read-only query endpoints served directly from gateway DB connection.
+Mutation endpoints (approve, reject, clearance, delete) are proxy stubs
+awaiting orchestrator domain endpoints (Pass 2/3).
 NOTE: Submit lives in platform_bp.py (B2B-facing).
 
-Endpoints:
+Read endpoints (gateway-local):
 - GET    /api/assets/{asset_id}                           - Get asset details
 - GET    /api/assets                                      - List assets
 - GET    /api/assets/{asset_id}/versions                  - List versions
 - GET    /api/assets/{asset_id}/versions/{ordinal}        - Get specific version
 - GET    /api/assets/{asset_id}/versions/latest           - Get latest approved
-- POST   /api/assets/{asset_id}/versions/{ordinal}/approve - Approve version
-- POST   /api/assets/{asset_id}/versions/{ordinal}/reject  - Reject version
-- POST   /api/assets/{asset_id}/clearance/cleared         - Mark cleared
-- POST   /api/assets/{asset_id}/clearance/public          - Mark public
-- DELETE /api/assets/{asset_id}                            - Soft delete
 - GET    /api/assets/platforms                             - List platforms
+
+Mutation stubs (will proxy to orchestrator):
+- POST   /api/assets/{asset_id}/versions/{ordinal}/approve - 501 stub
+- POST   /api/assets/{asset_id}/versions/{ordinal}/reject  - 501 stub
+- POST   /api/assets/{asset_id}/clearance/cleared         - 501 stub
+- POST   /api/assets/{asset_id}/clearance/public          - 501 stub
+- DELETE /api/assets/{asset_id}                            - 501 stub
 """
 
 import json
 import logging
-from datetime import datetime, timezone
 
 import azure.functions as func
 
-from function.models.requests import ApprovalRequest, ClearanceRequest
 from function.models.responses import (
     AssetResponse,
     AssetListResponse,
@@ -64,6 +66,16 @@ def _error(error: str, details: str = None, status_code: int = 400) -> func.Http
     return _json_response(
         ErrorResponse(error=error, details=details).model_dump(),
         status_code=status_code,
+    )
+
+
+def _not_implemented(action: str, step: str) -> func.HttpResponse:
+    """Return 501 for mutation endpoints awaiting orchestrator domain API."""
+    return _error(
+        "Not implemented",
+        f"{action} is being migrated to orchestrator domain API. "
+        f"See TODO.md Phase 4B-REBUILD, step {step}.",
+        501,
     )
 
 
@@ -103,7 +115,7 @@ def _version_to_response(row: dict) -> dict:
 
 
 # ============================================================================
-# ASSET QUERIES
+# ASSET QUERIES (read-only)
 # ============================================================================
 
 @asset_bp.route(route="assets/{asset_id}", methods=["GET"])
@@ -168,7 +180,7 @@ def asset_list(req: func.HttpRequest) -> func.HttpResponse:
 
 
 # ============================================================================
-# VERSION QUERIES
+# VERSION QUERIES (read-only)
 # ============================================================================
 
 @asset_bp.route(route="assets/{asset_id}/versions", methods=["GET"])
@@ -244,7 +256,7 @@ def version_get(req: func.HttpRequest) -> func.HttpResponse:
 
 
 # ============================================================================
-# APPROVAL
+# APPROVAL (proxy stubs — awaiting orchestrator domain endpoints)
 # ============================================================================
 
 @asset_bp.route(route="assets/{asset_id}/versions/{ordinal}/approve", methods=["POST"])
@@ -253,53 +265,11 @@ def version_approve(req: func.HttpRequest) -> func.HttpResponse:
     Approve an asset version.
 
     POST /api/assets/{asset_id}/versions/{ordinal}/approve
-    Body: {"reviewer": "analyst@gov"}
+
+    STUB: Returns 501 until orchestrator domain endpoint is built.
+    Will proxy to: POST {ORCHESTRATOR_BASE_URL}/api/v1/domain/assets/{id}/versions/{ord}/approve
     """
-    asset_id = req.route_params.get("asset_id")
-    try:
-        ordinal = int(req.route_params.get("ordinal"))
-    except (TypeError, ValueError):
-        return _error("Invalid ordinal", "version_ordinal must be an integer")
-
-    try:
-        body = req.get_json()
-        request = ApprovalRequest.model_validate(body)
-    except Exception as e:
-        return _error("Invalid request", str(e))
-
-    try:
-        repo = AssetQueryRepository()
-
-        # Get current version
-        row = repo.get_version(asset_id, ordinal)
-        if row is None:
-            return _error("Version not found", f"Version {ordinal} not found for asset '{asset_id}'", 404)
-
-        if row["approval_state"] != "pending_review":
-            return _error(
-                "Invalid state transition",
-                f"Cannot approve from state '{row['approval_state']}' (must be 'pending_review')",
-                409,
-            )
-
-        updated = repo.update_version_approval(
-            asset_id=asset_id,
-            version_ordinal=ordinal,
-            approval_state="approved",
-            reviewer=request.reviewer,
-            expected_version=row["version"],
-        )
-        if not updated:
-            return _error("Version conflict", "Record was modified by another request", 409)
-
-        # Fetch updated version
-        updated_row = repo.get_version(asset_id, ordinal)
-        logger.info(f"Approved asset {asset_id} v{ordinal} by {request.reviewer}")
-        return _json_response(_version_to_response(updated_row))
-
-    except Exception as e:
-        logger.exception(f"Error approving version: {e}")
-        return _error("Database error", str(e), 500)
+    return _not_implemented("Version approval", "R2c")
 
 
 @asset_bp.route(route="assets/{asset_id}/versions/{ordinal}/reject", methods=["POST"])
@@ -308,163 +278,45 @@ def version_reject(req: func.HttpRequest) -> func.HttpResponse:
     Reject an asset version.
 
     POST /api/assets/{asset_id}/versions/{ordinal}/reject
-    Body: {"reviewer": "analyst@gov", "reason": "Bad CRS"}
+
+    STUB: Returns 501 until orchestrator domain endpoint is built.
+    Will proxy to: POST {ORCHESTRATOR_BASE_URL}/api/v1/domain/assets/{id}/versions/{ord}/reject
     """
-    asset_id = req.route_params.get("asset_id")
-    try:
-        ordinal = int(req.route_params.get("ordinal"))
-    except (TypeError, ValueError):
-        return _error("Invalid ordinal", "version_ordinal must be an integer")
-
-    try:
-        body = req.get_json()
-        request = ApprovalRequest.model_validate(body)
-    except Exception as e:
-        return _error("Invalid request", str(e))
-
-    if not request.reason:
-        return _error("Reason required", "Rejection reason is required")
-
-    try:
-        repo = AssetQueryRepository()
-
-        row = repo.get_version(asset_id, ordinal)
-        if row is None:
-            return _error("Version not found", f"Version {ordinal} not found for asset '{asset_id}'", 404)
-
-        if row["approval_state"] != "pending_review":
-            return _error(
-                "Invalid state transition",
-                f"Cannot reject from state '{row['approval_state']}' (must be 'pending_review')",
-                409,
-            )
-
-        updated = repo.update_version_approval(
-            asset_id=asset_id,
-            version_ordinal=ordinal,
-            approval_state="rejected",
-            reviewer=request.reviewer,
-            rejection_reason=request.reason,
-            expected_version=row["version"],
-        )
-        if not updated:
-            return _error("Version conflict", "Record was modified by another request", 409)
-
-        updated_row = repo.get_version(asset_id, ordinal)
-        logger.info(f"Rejected asset {asset_id} v{ordinal} by {request.reviewer}: {request.reason}")
-        return _json_response(_version_to_response(updated_row))
-
-    except Exception as e:
-        logger.exception(f"Error rejecting version: {e}")
-        return _error("Database error", str(e), 500)
+    return _not_implemented("Version rejection", "R2d")
 
 
 # ============================================================================
-# CLEARANCE
+# CLEARANCE (proxy stubs — awaiting orchestrator domain endpoints)
 # ============================================================================
 
 @asset_bp.route(route="assets/{asset_id}/clearance/cleared", methods=["POST"])
 def asset_mark_cleared(req: func.HttpRequest) -> func.HttpResponse:
     """
-    Mark asset clearance: UNCLEARED → OUO.
+    Mark asset clearance: UNCLEARED -> OUO.
 
     POST /api/assets/{asset_id}/clearance/cleared
-    Body: {"actor": "reviewer@gov"}
+
+    STUB: Returns 501 until orchestrator domain endpoint is built.
+    Will proxy to: POST {ORCHESTRATOR_BASE_URL}/api/v1/domain/assets/{id}/clearance/cleared
     """
-    asset_id = req.route_params.get("asset_id")
-
-    try:
-        body = req.get_json()
-        request = ClearanceRequest.model_validate(body)
-    except Exception as e:
-        return _error("Invalid request", str(e))
-
-    try:
-        repo = AssetQueryRepository()
-
-        row = repo.get_asset(asset_id)
-        if row is None:
-            return _error("Asset not found", f"No asset with ID '{asset_id}'", 404)
-
-        if row["clearance_state"] != "uncleared":
-            return _error(
-                "Invalid state transition",
-                f"Cannot clear from state '{row['clearance_state']}' (must be 'uncleared')",
-                409,
-            )
-
-        now = datetime.now(timezone.utc)
-        updated = repo.update_asset_clearance(
-            asset_id=asset_id,
-            clearance_state="ouo",
-            actor=request.actor,
-            expected_version=row["version"],
-            cleared_at=now,
-        )
-        if not updated:
-            return _error("Version conflict", "Record was modified by another request", 409)
-
-        updated_row = repo.get_asset(asset_id)
-        logger.info(f"Asset {asset_id} cleared by {request.actor}")
-        return _json_response(_asset_to_response(updated_row))
-
-    except Exception as e:
-        logger.exception(f"Error clearing asset: {e}")
-        return _error("Database error", str(e), 500)
+    return _not_implemented("Clearance update", "R2e")
 
 
 @asset_bp.route(route="assets/{asset_id}/clearance/public", methods=["POST"])
 def asset_mark_public(req: func.HttpRequest) -> func.HttpResponse:
     """
-    Mark asset clearance: OUO → PUBLIC.
+    Mark asset clearance: OUO -> PUBLIC.
 
     POST /api/assets/{asset_id}/clearance/public
-    Body: {"actor": "reviewer@gov"}
+
+    STUB: Returns 501 until orchestrator domain endpoint is built.
+    Will proxy to: POST {ORCHESTRATOR_BASE_URL}/api/v1/domain/assets/{id}/clearance/public
     """
-    asset_id = req.route_params.get("asset_id")
-
-    try:
-        body = req.get_json()
-        request = ClearanceRequest.model_validate(body)
-    except Exception as e:
-        return _error("Invalid request", str(e))
-
-    try:
-        repo = AssetQueryRepository()
-
-        row = repo.get_asset(asset_id)
-        if row is None:
-            return _error("Asset not found", f"No asset with ID '{asset_id}'", 404)
-
-        if row["clearance_state"] != "ouo":
-            return _error(
-                "Invalid state transition",
-                f"Cannot make public from state '{row['clearance_state']}' (must be 'ouo')",
-                409,
-            )
-
-        now = datetime.now(timezone.utc)
-        updated = repo.update_asset_clearance(
-            asset_id=asset_id,
-            clearance_state="public",
-            actor=request.actor,
-            expected_version=row["version"],
-            made_public_at=now,
-        )
-        if not updated:
-            return _error("Version conflict", "Record was modified by another request", 409)
-
-        updated_row = repo.get_asset(asset_id)
-        logger.info(f"Asset {asset_id} made public by {request.actor}")
-        return _json_response(_asset_to_response(updated_row))
-
-    except Exception as e:
-        logger.exception(f"Error making asset public: {e}")
-        return _error("Database error", str(e), 500)
+    return _not_implemented("Clearance update", "R2f")
 
 
 # ============================================================================
-# SOFT DELETE
+# SOFT DELETE (proxy stub — awaiting orchestrator domain endpoint)
 # ============================================================================
 
 @asset_bp.route(route="assets/{asset_id}", methods=["DELETE"])
@@ -473,42 +325,15 @@ def asset_delete(req: func.HttpRequest) -> func.HttpResponse:
     Soft-delete an asset.
 
     DELETE /api/assets/{asset_id}
-    Query params: actor (required)
+
+    STUB: Returns 501 until orchestrator domain endpoint is built.
+    Will proxy to: DELETE {ORCHESTRATOR_BASE_URL}/api/v1/domain/assets/{id}
     """
-    asset_id = req.route_params.get("asset_id")
-    actor = req.params.get("actor")
-
-    if not actor:
-        return _error("Actor required", "Query parameter 'actor' is required")
-
-    try:
-        repo = AssetQueryRepository()
-
-        row = repo.get_asset(asset_id)
-        if row is None:
-            return _error("Asset not found", f"No asset with ID '{asset_id}'", 404)
-
-        if row.get("deleted_at") is not None:
-            return _error("Already deleted", f"Asset '{asset_id}' is already deleted", 409)
-
-        deleted = repo.soft_delete_asset(
-            asset_id=asset_id,
-            actor=actor,
-            expected_version=row["version"],
-        )
-        if not deleted:
-            return _error("Version conflict", "Record was modified by another request", 409)
-
-        logger.info(f"Asset {asset_id} soft-deleted by {actor}")
-        return _json_response({"deleted": True, "asset_id": asset_id})
-
-    except Exception as e:
-        logger.exception(f"Error deleting asset: {e}")
-        return _error("Database error", str(e), 500)
+    return _not_implemented("Asset deletion", "R2g")
 
 
 # ============================================================================
-# PLATFORMS (read-only convenience)
+# PLATFORMS (read-only)
 # ============================================================================
 
 @asset_bp.route(route="assets/platforms", methods=["GET"])

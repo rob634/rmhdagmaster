@@ -3,17 +3,21 @@
 # ============================================================================
 # EPOCH: 5 - DAG ORCHESTRATION
 # STATUS: Gateway - Database access base class
-# PURPOSE: Lightweight PostgreSQL repository for read-only queries
+# PURPOSE: Read-only PostgreSQL repository for gateway queries
 # CREATED: 04 FEB 2026
 # ============================================================================
 """
 Base Repository for Function App
 
-Lightweight PostgreSQL repository for read-only queries.
+Read-only PostgreSQL repository for gateway queries.
 Uses psycopg3 with dict_row factory (NEVER tuple indexing).
 
+The gateway NEVER writes to the database. All mutations go through
+the orchestrator's domain HTTP API. This class intentionally has
+NO execute_write or execute_write_returning methods.
+
 Design Principles:
-- Read-only queries (state changes go through orchestrator)
+- Read-only queries ONLY (all state changes go through orchestrator)
 - dict_row factory ALWAYS (never tuple indexing)
 - Connection per query (function app pattern)
 - Managed identity support (future)
@@ -34,8 +38,8 @@ class FunctionRepository:
     """
     Base repository for function app database access.
 
-    IMPORTANT: This is a read-only repository. All state changes
-    must go through the orchestrator via the job queue.
+    READ-ONLY. The gateway never writes to the database.
+    All mutations go through the orchestrator's domain HTTP API.
 
     Pattern:
     - Connection per query (no connection pooling in functions)
@@ -116,42 +120,6 @@ class FunctionRepository:
             with conn.cursor() as cur:
                 cur.execute(query, params)
                 return cur.fetchall()
-
-    def execute_write(self, query: str, params: tuple = ()) -> int:
-        """
-        Execute INSERT/UPDATE/DELETE and commit.
-
-        Args:
-            query: SQL statement
-            params: Query parameters tuple
-
-        Returns:
-            Number of rows affected
-        """
-        with self._get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(query, params)
-                rowcount = cur.rowcount
-            conn.commit()
-            return rowcount
-
-    def execute_write_returning(self, query: str, params: tuple = ()) -> Optional[Dict[str, Any]]:
-        """
-        Execute INSERT/UPDATE with RETURNING clause and commit.
-
-        Args:
-            query: SQL statement with RETURNING clause
-            params: Query parameters tuple
-
-        Returns:
-            Returned row as dict, or None
-        """
-        with self._get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(query, params)
-                row = cur.fetchone()
-            conn.commit()
-            return row
 
     def execute_count(self, query: str, params: tuple = ()) -> int:
         """
