@@ -119,11 +119,11 @@ ENV/
 .gitattributes
 
 # =============================================================================
-# OTHER REQUIREMENTS (function uses requirements-function.txt)
+# OTHER REQUIREMENTS (function uses root requirements.txt)
 # =============================================================================
-requirements.txt
 requirements-orchestrator.txt
 requirements-worker.txt
+requirements-function.txt
 
 # =============================================================================
 # ENVIRONMENT AND LOCAL CONFIG

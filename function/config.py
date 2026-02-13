@@ -92,17 +92,11 @@ class FunctionConfig:
         # 2. Managed identity (same as orchestrator)
         use_mi = os.environ.get("USE_MANAGED_IDENTITY", "false").lower() == "true"
         if use_mi:
-            try:
-                from infrastructure.auth import get_postgres_connection_string
-                logger.info("Gateway using Managed Identity for PostgreSQL")
-                return get_postgres_connection_string()
-            except ImportError:
-                logger.warning("Auth module not available, falling back to password auth")
-            except Exception as e:
-                logger.error(f"Managed identity auth failed: {e}")
-                raise
+            from infrastructure.auth import get_postgres_connection_string
+            logger.info("Gateway using Managed Identity for PostgreSQL")
+            return get_postgres_connection_string()
 
-        # 3. Password auth fallback
+        # 3. Password auth fallback (local dev only)
         user = os.environ.get("POSTGRES_USER", "postgres")
         password = os.environ.get("POSTGRES_PASSWORD", "")
 
