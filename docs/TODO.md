@@ -1,6 +1,6 @@
 # TODO - rmhdagmaster
 
-**Last Updated**: 13 FEB 2026
+**Last Updated**: 13 FEB 2026 (Phase 4D complete, pivot to Raster ETL)
 
 > Detailed specs, code examples, and task checklists: see `IMPLEMENTATION.md`.
 > System design and architecture: see `ARCHITECTURE.md`.
@@ -22,8 +22,12 @@
 | Tier 1: E2E Execution | Done | Worker integration, template resolution, real workflows | Sec 5-7 |
 | Tier 2: Parallel Processing | Done | Fan-out, fan-in, dynamic child nodes | Sec 3.1-3.2 |
 | Tier 3: Retry & Timeout | Done | Timeout detection, retry wiring, blob SAS, raster validate | Sec 2 |
-| Phase 4A: Asset Service | Done | GeospatialAssetService — business rules, 26 tests | PHASE1_ASSET_SERVICE.md |
+| Phase 4A: Asset Service | Done | GeospatialAssetService — business rules, 28 tests | PHASE1_ASSET_SERVICE.md |
 | Phase 4B: Gateway Business API | Done | 4-pass revision: DELETE→REBUILD→PROXY→DEPLOY | ARCHITECTURE.md Sec 15.6 |
+| Phase 4C: DAG Callback Wiring | Done | `on_processing_completed/failed` in orchestrator loop | merged into 4B Pass 2 |
+| Phase 4D: Layer Metadata | Done | Models, repo, service, admin API, gateway blueprint — 34 tests | LAYER_METADATA_IMPL.md Phase 1 |
+| Phase 4E-4F: Projection + Export | **On Hold** | Blocked on real ETL artifacts (STAC collections, PostGIS tables) | LAYER_METADATA_IMPL.md Phase 2-3 |
+| **Raster ETL** | **NEXT** | Linear pipeline first, then conditional/tiling | see below |
 
 ---
 
@@ -60,7 +64,7 @@
 - Function App gateway config aligned with orchestrator env vars (`POSTGRES_*`, `SERVICE_BUS_FQDN`)
 - Gateway managed identity auth: delegates to `infrastructure/auth` for UMI PostgreSQL access
 - Function App RBAC configured: system-assigned identity for Service Bus, UMI for PostgreSQL
-- GeospatialAssetService: business rules (submit, approve, reject, clearance, reprocess, callbacks) — 26 tests
+- GeospatialAssetService: business rules (submit, approve, reject, clearance, reprocess, callbacks) — 28 tests
 - Asset read-only query endpoints on gateway (get, list, versions, latest, platforms)
 - B2B status polling: `GET /api/platform/status/{request_id}` via `correlation_id`
 - `asset_id` field on `dag_jobs`: nullable, indexed — links jobs to geospatial assets (standalone jobs have NULL)
@@ -72,7 +76,8 @@
 - Gateway deployed to Azure: `rmhdaggateway-f7epa0d6bnc6bzak.eastus-01.azurewebsites.net`
 - Silent auth fallback bug fixed: gateway fails fast if managed identity auth requested but unavailable
 - v0.17.0 deployed to Azure (orchestrator + worker + gateway), echo test verified E2E (13 FEB 2026)
-- 190 unit tests across 8 test files
+- Phase 4D: LayerMetadata + LayerCatalog models, MetadataService, orchestrator CRUD routes, gateway read + proxy blueprint
+- 209 unit tests across 9 test files
 
 ---
 
@@ -103,9 +108,7 @@
 
 29 retry/timeout tests in `tests/test_retry.py`. Test workflows: `workflows/retry_test.yaml`, `workflows/retry_fan_out_test.yaml`.
 
-### Tier 4: Business Domain & Presentation Layer (CURRENT FOCUS)
-
-Build the business domain layer, connect B2B applications, and add presentation metadata.
+### Tier 4: Business Domain & Presentation Layer — COMPLETE (except projection)
 
 **Design**: ARCHITECTURE.md Sections 13.3, 15.6 | **Implementation plans**: `PHASE1_ASSET_SERVICE.md`, `LAYER_METADATA_IMPL.md`
 
@@ -113,127 +116,96 @@ Build the business domain layer, connect B2B applications, and add presentation 
 - **Orchestrator** = domain authority — owns ALL mutations (business + execution state)
 - **Gateway** = read-only ACL proxy — forwards B2B mutations to orchestrator HTTP API, serves read-only queries
 
-#### Phase 4A: Asset Service (standalone, testable) -- DONE (11 FEB 2026)
+#### Phase 4A: Asset Service -- DONE (11 FEB 2026)
 
-| Item | What It Is | Status | Ref |
-|------|-----------|--------|-----|
-| GeospatialAssetService | Business rules: submit, approve, reject, clearance, reprocess | Done | `services/asset_service.py` |
-| `get_by_job_id()` | Find asset version by DAG job ID (for processing callbacks) | Done | `repositories/version_repo.py` |
-| Unit tests | 26 tests with mocked repos | Done | `tests/test_asset_service.py` |
+GeospatialAssetService: submit, approve, reject, clearance, reprocess, callbacks — 28 tests.
 
 #### Phase 4B: Gateway Business API -- DONE (13 FEB 2026)
 
-> **Architecture correction**: Phase 4B originally had the gateway writing directly to the database.
-> This violated separation of concerns and introduced the `current_job_id = message_id` bug
-> (Service Bus message_id != orchestrator job_id). Revised as a 4-pass plan:
-> DELETE → REBUILD → PROXY → DEPLOY+VERIFY.
+4-pass revision: DELETE → REBUILD → PROXY → DEPLOY. Gateway is read-only proxy, orchestrator is domain authority.
 
-**What was done:**
-- Pass 1 (DELETE): Stripped all gateway write capability — `execute_write()`, 6 write methods, direct DB mutations, Service Bus publish
-- Pass 2 (REBUILD): Orchestrator domain endpoints (`api/domain_routes.py`), `asset_service` wiring, processing callbacks (`on_processing_completed/failed`)
-- Pass 3 (PROXY): `OrchestratorClient` (sync httpx), gateway mutations rewritten as proxy calls, error code relay (4xx→4xx, 5xx→502, timeout→504)
-- Pass 4 (DEPLOY+VERIFY): All 3 apps deployed, echo test E2E verified, gateway query repos aligned to schema
-- Silent auth fallback bug fixed (gateway `config.py` was swallowing `ImportError` and falling through to password auth)
-- Gateway query repos aligned to Pydantic-generated schema (stale column names: `idempotency_key`, `node_name`, `handler_name`, `input_data`, `result_data`, `task_queue`, `message`, `details`, `timestamp` → corrected)
-- All health endpoints unified: `version` + `build_date` from `__version__.py` across orchestrator, worker, and gateway
+#### Phase 4C: DAG Callback Wiring -- DONE (merged into 4B Pass 2)
 
-**Key files created/modified:**
-- `function/services/orchestrator_client.py` (NEW) — sync httpx proxy client
-- `api/domain_routes.py` (NEW) — orchestrator domain HTTP endpoints
-- `tests/test_domain_routes.py` (NEW) — 17 tests for domain endpoints + callbacks
-- `tests/test_gateway_proxy.py` (NEW) — 13 tests for proxy client
-- `function/blueprints/platform_bp.py` — 501 stub → proxy
-- `function/blueprints/asset_bp.py` — 5 stubs → proxy calls
-- `function/repositories/base.py` — write methods removed
-- `function/repositories/job_query_repo.py` — aligned to schema
-- `function/repositories/node_query_repo.py` — aligned to schema
-- `function/repositories/event_query_repo.py` — aligned to schema
-- `health/router.py` — version added to health responses
+`on_processing_completed/failed` fires in orchestrator loop on job completion.
 
-#### ~~Phase 4C: DAG Callback Wiring~~ → merged into Phase 4B Pass 2 (REBUILD)
+#### Phase 4D: Layer Metadata Phase 1 -- DONE (13 FEB 2026)
+
+| Item | What It Is | Status | Ref |
+|------|-----------|--------|-----|
+| LayerMetadata + LayerCatalog models | Source of truth + B2C projection target (PydanticToSQL DDL) | Done | `core/models/layer_metadata.py`, `layer_catalog.py` |
+| LayerMetadataRepository | Async CRUD, optimistic locking, JSONB wrapping | Done | `repositories/metadata_repo.py` |
+| MetadataService | Asset validation, zoom constraints, merge updates | Done | `services/metadata_service.py` |
+| Orchestrator CRUD routes | `/api/v1/domain/metadata/` (create, read, update, delete, list) | Done | `api/metadata_routes.py` |
+| Gateway metadata blueprint | Reads local, mutations proxy to orchestrator | Done | `function/blueprints/metadata_bp.py` |
+| OrchestratorClient metadata | 3 proxy methods (create, update, delete) | Done | `function/services/orchestrator_client.py` |
+| Unit tests | 34 tests (model, catalog, repo, service, schema) | Done | `tests/test_layer_metadata.py` |
+
+#### Phase 4E-4F: Metadata Projection + Export -- ON HOLD
+
+**Reason**: Projection writes to STAC collections and layer_catalog. These targets don't exist until the raster ETL pipeline produces real artifacts (COGs, STAC items, PostGIS tables). Building projection against imaginary data structures means guessing and rewriting later.
+
+**Resume when**: Raster ETL pipeline produces real COG outputs with STAC registration. Then 4E has real targets to project into.
 
 ---
 
-## EXECUTION PLAN: Phase 4B Revision -- DONE (13 FEB 2026)
+### Raster ETL Pipeline (CURRENT FOCUS)
 
-> All 4 passes complete. Gateway is read-only proxy, orchestrator is domain authority, all 3 apps deployed.
+Build a working end-to-end raster ingest workflow that produces real COG outputs and STAC catalog entries.
 
-### Pass 1: DELETE -- DONE (12 FEB 2026)
+**Strategy**: Linear pipeline first → prove the engine works → then add conditional routing and tiling to leverage the DAG.
 
-- [x] **D1.** `function/repositories/base.py` — Deleted `execute_write()` and `execute_write_returning()`.
-- [x] **D2.** `function/repositories/asset_query_repo.py` — Deleted 6 write methods, kept all read methods.
-- [x] **D3.** `function/blueprints/platform_bp.py` — Gutted submit endpoint, replaced with 501 stub.
-- [x] **D4.** `function/blueprints/asset_bp.py` — Gutted 5 mutation endpoints, replaced with 501 stubs.
-- [x] **D5.** `function/config.py` — Service Bus config retained (gateway_bp generic submit still uses it).
-- [x] **D6.** `function/models/requests.py` — Models verified, no orchestrator imports.
-- [x] **D7-D8.** Tests pass, imports clean.
+#### Existing Handlers (already built, in `handlers/raster/`)
 
-### Pass 2: REBUILD -- DONE (12 FEB 2026)
+| Handler Name | Purpose | Status |
+|--------------|---------|--------|
+| `raster.validate` | Validate raster, detect type, compression profile | Built + tested E2E |
+| `raster.blob_to_mount` | Copy blob to Azure Files mount for disk-based processing | Built |
+| `raster.create_cog` | Reproject + create COG with type-specific compression | Built |
+| `raster.generate_tiling_scheme` | Calculate tile grid for large outputs (>1GB) | Built |
+| `raster.process_tile_batch` | Process tiles with per-tile checkpointing | Built |
+| `raster.stac_ensure_collection` | Create/update STAC collection (idempotent) | Built |
+| `raster.stac_register_item` | Register single COG to STAC | Built |
+| `raster.stac_register_items` | Register multiple tiled COGs to STAC | Built |
 
-- [x] **R1.** Fixed `asset_service.submit_asset()` — passes `asset_id` + `correlation_id` to `create_job()`.
-- [x] **R2.** Created `api/domain_routes.py` — 7 endpoints at `/api/v1/domain/`.
-- [x] **R3.** Wired `asset_service` into `Orchestrator.__init__()` and `main.py`.
-- [x] **R4.** Processing callbacks: `on_processing_completed/failed` in `_check_job_completion()`.
-- [x] **R5.** 17 tests in `tests/test_domain_routes.py`.
+#### Phase R1: Simple Linear Workflow (NEXT)
 
-### Pass 3: PROXY -- DONE (12 FEB 2026)
+Create a static, linear workflow that exercises the core pipeline end-to-end:
 
-- [x] **P1.** Created `function/services/orchestrator_client.py` — sync httpx client, 6 methods.
-- [x] **P2.** Rewrote `platform_bp.py` submit: validates → proxies → returns B2B-filtered response.
-- [x] **P3.** Rewrote 5 `asset_bp.py` mutation stubs → proxy calls.
-- [x] **P4.** `ORCHESTRATOR_BASE_URL` configured on Azure Function App.
-- [x] **P5.** 13 tests in `tests/test_gateway_proxy.py`.
+```
+START → validate → create_cog → stac_ensure_collection → stac_register_item → END
+```
 
-### Pass 4: DEPLOY + VERIFY -- DONE (13 FEB 2026)
+| Item | What It Is | Status |
+|------|-----------|--------|
+| Fix workflow YAML | Existing `raster_ingest.yaml` uses wrong handler names — align to actual registered handlers | Not started |
+| Wire handler params | Template expressions to pass validate output → COG input → STAC input | Not started |
+| Test E2E in Azure | Submit real raster → get COG output + STAC entry | Not started |
+| Fix handler bugs | Handlers were written speculatively — expect integration issues | Not started |
 
-- [x] **V1.** Schema deployed via `bootstrap/rebuild` (dev DB, fresh schema with `asset_id` column).
-- [x] **V2.** ACR build + deploy orchestrator + worker (`scripts/deploy.sh 0.1.17.0`).
-- [x] **V3.** Gateway deployed (`func azure functionapp publish rmhdaggateway`).
-- [x] **V4.** E2E echo test verified: submit → start → echo_handler → end → COMPLETED (~7s).
-- [x] **V5.** Gateway read endpoints verified: `/api/status/jobs`, `/api/status/stats`, proxy endpoints.
-- [x] **V6.** Tagged as v0.17.0 (commit `43110ba`).
+**Success criteria**: Submit a raster blob → validate passes → COG created in silver container → STAC collection + item registered → job COMPLETED with artifact paths.
 
-**Post-deploy fixes (13 FEB 2026):**
-- [x] Gateway auth: removed silent `except ImportError` fallback in `config.py` — now fails fast if MI unavailable.
-- [x] Added `psycopg-pool` to `requirements.txt` (needed by `infrastructure/__init__.py` transitive import).
-- [x] Removed `requirements.txt` from `.funcignore` (Oryx build system needs it).
-- [x] Gateway query repos: aligned 3 repos to current schema (stale column names from early development).
-- [x] Health endpoints: added `version` + `build_date` to all health probes (orchestrator, worker, gateway).
+#### Phase R2: Conditional Routing + Tiling (AFTER R1)
+
+Leverage the DAG for size-based conditional routing:
+
+```
+START → validate → route_by_size ─┬─ small  → create_cog (memory) ────────────────────┐
+                                  ├─ medium → create_cog (docker) ─────────────────────┤
+                                  └─ large  → blob_to_mount → generate_tiles → fan_out ┤
+                                                                                        ↓
+                                                                     stac_ensure_collection → stac_register → END
+```
+
+| Item | What It Is | Status |
+|------|-----------|--------|
+| Fix `raster_processing.yaml` | Align handler names, wire template expressions | Not started |
+| Tiling fan-out | Dynamic tile batch creation + parallel processing | Not started |
+| Multi-path STAC registration | Single COG vs tiled COGs (different STAC handlers) | Not started |
+| E2E with multiple raster sizes | Small (<100MB), medium (100MB-1GB), large (>1GB) | Not started |
+
+**After R2**: Resume Phase 4E (projection) — real STAC collections and artifacts exist to project metadata into.
 
 ---
-
-## Phase 4D-4F: Layer Metadata (AFTER Phase 4B revision complete)
-
-#### Phase 4D: Layer Metadata Phase 1 (models + admin CRUD)
-
-| Item | What It Is | Status | Ref |
-|------|-----------|--------|-----|
-| LayerMetadata + LayerCatalog models | Source of truth + B2C projection target | Not started | `LAYER_METADATA_IMPL.md` Phase 1 |
-| Metadata repos (async + sync) | CRUD for layer_metadata, DDL for layer_catalog | Not started | `LAYER_METADATA_IMPL.md` Phase 1 |
-| Admin CRUD API | Orchestrator domain endpoints for metadata (NOT gateway-local) | Not started | `LAYER_METADATA_IMPL.md` Phase 1 |
-| Unit tests | ~25-30 model + repo + API tests | Not started | `LAYER_METADATA_IMPL.md` Phase 1 |
-
-Depends on: asset tables deployed (Phase 4B-V1) — `layer_metadata.asset_id` FK references `geospatial_assets`.
-
-#### Phase 4E: Direct Command Router + Metadata Projection
-
-| Item | What It Is | Status | Ref |
-|------|-----------|--------|-----|
-| `api/command_routes.py` | FastAPI router at `/api/v1/commands/` on orchestrator | Not started | ARCHITECTURE.md Section 15.5 |
-| MetadataProjectionService | Publish layer_metadata → STAC + layer_catalog | Not started | `LAYER_METADATA_IMPL.md` Phase 2 |
-| Publish/unpublish commands | `POST /api/v1/commands/metadata/publish/{asset_id}` | Not started | `LAYER_METADATA_IMPL.md` Phase 2 |
-| Unit tests | ~20-25 projection + command tests | Not started | `LAYER_METADATA_IMPL.md` Phase 2 |
-
-Depends on: Phase 4D (models exist) + asset versions with artifacts (Phase 4B-R4) for meaningful projection.
-
-#### Phase 4F: External B2C + ADF Export
-
-| Item | What It Is | Status | Ref |
-|------|-----------|--------|-----|
-| External projection handler | Project layer_catalog to external B2C database | Not started | `LAYER_METADATA_IMPL.md` Phase 3 |
-| ADF pipeline integration | Copy layer_catalog + pgstac to external on PUBLIC clearance | Not started | `LAYER_METADATA_IMPL.md` Phase 3 |
-
-Depends on: Phase 4E (internal projection working) + ADF export pipeline operational.
 
 ### Tier 5: Observability & Hardening
 
@@ -273,7 +245,7 @@ Polish, operational visibility, and production safety.
 
 ## Known Gaps
 
-- [ ] Test coverage (8 test files / 190 tests for ~125 source files — growing but still minimal)
+- [ ] Test coverage (9 test files / 209 tests for ~130 source files — growing but still minimal)
 - [x] ~~Function App not yet deployed to Azure~~ — Done (13 FEB 2026): `rmhdaggateway` deployed, readyz green
 - [x] ~~Function App RBAC not configured~~ — Done (11 FEB 2026): system-assigned identity for Service Bus, UMI for PostgreSQL
 - [ ] CI/CD pipeline not built (GitHub Actions workflow spec exists in IMPL)
