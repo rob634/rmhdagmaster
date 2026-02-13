@@ -117,16 +117,17 @@ class NodeStatusResponse(BaseModel):
 
     model_config = ConfigDict()
 
-    node_id: str = Field(..., description="Unique node identifier")
+    node_id: str = Field(..., description="Node identifier within the job")
     job_id: str = Field(..., description="Parent job ID")
-    node_name: str = Field(..., description="Node name from workflow definition")
     status: str = Field(..., description="Node status")
-    handler_name: str = Field(..., description="Handler that processes this node")
+    task_id: Optional[str] = Field(default=None, description="Task ID if dispatched")
     created_at: datetime = Field(..., description="When node was created")
+    dispatched_at: Optional[datetime] = Field(default=None, description="When task was dispatched")
     started_at: Optional[datetime] = Field(default=None, description="When processing started")
     completed_at: Optional[datetime] = Field(default=None, description="When node completed")
     error_message: Optional[str] = Field(default=None, description="Error if failed")
-    result_data: Optional[Dict[str, Any]] = Field(default=None, description="Result data if completed")
+    output: Optional[Dict[str, Any]] = Field(default=None, description="Output data if completed")
+    retry_count: int = Field(default=0, description="Number of retries")
 
 
 class EventListResponse(BaseModel):

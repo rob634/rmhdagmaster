@@ -251,30 +251,25 @@ def status_stats(req: func.HttpRequest) -> func.HttpResponse:
 @status_bp.route(route="status/lookup", methods=["GET"])
 def status_lookup(req: func.HttpRequest) -> func.HttpResponse:
     """
-    Lookup job by correlation_id or idempotency_key.
+    Lookup job by correlation_id.
 
     GET /api/status/lookup
-    Query params: correlation_id OR idempotency_key (one required)
+    Query params: correlation_id (required)
     """
     correlation_id = req.params.get("correlation_id")
-    idempotency_key = req.params.get("idempotency_key")
 
-    if not correlation_id and not idempotency_key:
+    if not correlation_id:
         return _json_response(
             ErrorResponse(
                 error="Missing parameter",
-                details="Provide correlation_id or idempotency_key",
+                details="Provide correlation_id",
             ).model_dump(),
             status_code=400,
         )
 
     try:
         job_repo = JobQueryRepository()
-
-        if correlation_id:
-            job = job_repo.get_job_by_correlation_id(correlation_id)
-        else:
-            job = job_repo.get_job_by_idempotency_key(idempotency_key)
+        job = job_repo.get_job_by_correlation_id(correlation_id)
 
         if not job:
             return _json_response(

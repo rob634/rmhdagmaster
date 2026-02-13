@@ -31,6 +31,7 @@ Endpoints:
 import azure.functions as func
 import json
 import logging
+from __version__ import __version__, BUILD_DATE
 
 # ============================================================================
 # CREATE APP FIRST (before any imports that might fail)
@@ -61,7 +62,7 @@ def liveness_probe(req: func.HttpRequest) -> func.HttpResponse:
     Always responds regardless of startup validation state.
     """
     return func.HttpResponse(
-        json.dumps({"alive": True, "service": "rmhdagmaster-gateway"}),
+        json.dumps({"alive": True, "service": "rmhdagmaster-gateway", "version": __version__, "build_date": BUILD_DATE}),
         status_code=200,
         headers={"Content-Type": "application/json"},
     )
@@ -81,7 +82,7 @@ def readiness_probe(req: func.HttpRequest) -> func.HttpResponse:
 
     if STARTUP_STATE.all_passed:
         return func.HttpResponse(
-            json.dumps({"ready": True, "service": "rmhdagmaster-gateway"}),
+            json.dumps({"ready": True, "service": "rmhdagmaster-gateway", "version": __version__, "build_date": BUILD_DATE}),
             status_code=200,
             headers={"Content-Type": "application/json"},
         )

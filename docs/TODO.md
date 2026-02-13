@@ -1,6 +1,6 @@
 # TODO - rmhdagmaster
 
-**Last Updated**: 12 FEB 2026
+**Last Updated**: 13 FEB 2026
 
 > Detailed specs, code examples, and task checklists: see `IMPLEMENTATION.md`.
 > System design and architecture: see `ARCHITECTURE.md`.
@@ -22,6 +22,8 @@
 | Tier 1: E2E Execution | Done | Worker integration, template resolution, real workflows | Sec 5-7 |
 | Tier 2: Parallel Processing | Done | Fan-out, fan-in, dynamic child nodes | Sec 3.1-3.2 |
 | Tier 3: Retry & Timeout | Done | Timeout detection, retry wiring, blob SAS, raster validate | Sec 2 |
+| Phase 4A: Asset Service | Done | GeospatialAssetService — business rules, 26 tests | PHASE1_ASSET_SERVICE.md |
+| Phase 4B: Gateway Business API | Done | 4-pass revision: DELETE→REBUILD→PROXY→DEPLOY | ARCHITECTURE.md Sec 15.6 |
 
 ---
 
@@ -58,11 +60,19 @@
 - Function App gateway config aligned with orchestrator env vars (`POSTGRES_*`, `SERVICE_BUS_FQDN`)
 - Gateway managed identity auth: delegates to `infrastructure/auth` for UMI PostgreSQL access
 - Function App RBAC configured: system-assigned identity for Service Bus, UMI for PostgreSQL
-- GeospatialAssetService: business rules (submit, approve, reject, clearance, reprocess, callbacks) — 24 tests
+- GeospatialAssetService: business rules (submit, approve, reject, clearance, reprocess, callbacks) — 26 tests
 - Asset read-only query endpoints on gateway (get, list, versions, latest, platforms)
 - B2B status polling: `GET /api/platform/status/{request_id}` via `correlation_id`
 - `asset_id` field on `dag_jobs`: nullable, indexed — links jobs to geospatial assets (standalone jobs have NULL)
-- 158 unit tests across 6 test files (v0.16.0)
+- Phase 4B complete: gateway write capability removed, orchestrator domain endpoints built, gateway rewired as proxy
+- OrchestratorClient: sync httpx proxy for gateway→orchestrator mutations (submit, approve, reject, clearance, delete)
+- Processing callbacks: `on_processing_completed/failed` fires in orchestrator loop on job completion
+- Gateway query repos aligned to current Pydantic-generated schema (13 FEB 2026)
+- All health endpoints now include `version` + `build_date` from `__version__.py` (unified across all 3 apps)
+- Gateway deployed to Azure: `rmhdaggateway-f7epa0d6bnc6bzak.eastus-01.azurewebsites.net`
+- Silent auth fallback bug fixed: gateway fails fast if managed identity auth requested but unavailable
+- v0.17.0 deployed to Azure (orchestrator + worker + gateway), echo test verified E2E (13 FEB 2026)
+- 190 unit tests across 8 test files
 
 ---
 
@@ -109,173 +119,86 @@ Build the business domain layer, connect B2B applications, and add presentation 
 |------|-----------|--------|-----|
 | GeospatialAssetService | Business rules: submit, approve, reject, clearance, reprocess | Done | `services/asset_service.py` |
 | `get_by_job_id()` | Find asset version by DAG job ID (for processing callbacks) | Done | `repositories/version_repo.py` |
-| Unit tests | 24 tests with mocked repos | Done | `tests/test_asset_service.py` |
+| Unit tests | 26 tests with mocked repos | Done | `tests/test_asset_service.py` |
 
-#### Phase 4B: Gateway Business API -- REVISED (12 FEB 2026)
+#### Phase 4B: Gateway Business API -- DONE (13 FEB 2026)
 
 > **Architecture correction**: Phase 4B originally had the gateway writing directly to the database.
 > This violated separation of concerns and introduced the `current_job_id = message_id` bug
-> (Service Bus message_id != orchestrator job_id). The gateway is now read-only.
-> Write methods and mutation logic are being deleted and rebuilt as orchestrator domain endpoints.
+> (Service Bus message_id != orchestrator job_id). Revised as a 4-pass plan:
+> DELETE → REBUILD → PROXY → DEPLOY+VERIFY.
 
-**What survived from original 4B (still valid):**
-- `asset_id` on Job model (nullable field + index) — `core/models/job.py`
-- Gateway read-only query endpoints (get, list, versions, latest, platforms) — `function/blueprints/asset_bp.py`
-- B2B status polling (read-only) — `function/blueprints/platform_bp.py`
-- AssetQueryRepository read methods — `function/repositories/asset_query_repo.py`
+**What was done:**
+- Pass 1 (DELETE): Stripped all gateway write capability — `execute_write()`, 6 write methods, direct DB mutations, Service Bus publish
+- Pass 2 (REBUILD): Orchestrator domain endpoints (`api/domain_routes.py`), `asset_service` wiring, processing callbacks (`on_processing_completed/failed`)
+- Pass 3 (PROXY): `OrchestratorClient` (sync httpx), gateway mutations rewritten as proxy calls, error code relay (4xx→4xx, 5xx→502, timeout→504)
+- Pass 4 (DEPLOY+VERIFY): All 3 apps deployed, echo test E2E verified, gateway query repos aligned to schema
+- Silent auth fallback bug fixed (gateway `config.py` was swallowing `ImportError` and falling through to password auth)
+- Gateway query repos aligned to Pydantic-generated schema (stale column names: `idempotency_key`, `node_name`, `handler_name`, `input_data`, `result_data`, `task_queue`, `message`, `details`, `timestamp` → corrected)
+- All health endpoints unified: `version` + `build_date` from `__version__.py` across orchestrator, worker, and gateway
 
-**What's being deleted (Phase 4B-DELETE):**
-- `execute_write()` / `execute_write_returning()` on FunctionRepository
-- 6 write methods on AssetQueryRepository
-- Gateway submit endpoint (direct DB writes + Service Bus publish)
-- Gateway mutation endpoints (approve, reject, clearance, delete doing direct DB writes)
+**Key files created/modified:**
+- `function/services/orchestrator_client.py` (NEW) — sync httpx proxy client
+- `api/domain_routes.py` (NEW) — orchestrator domain HTTP endpoints
+- `tests/test_domain_routes.py` (NEW) — 17 tests for domain endpoints + callbacks
+- `tests/test_gateway_proxy.py` (NEW) — 13 tests for proxy client
+- `function/blueprints/platform_bp.py` — 501 stub → proxy
+- `function/blueprints/asset_bp.py` — 5 stubs → proxy calls
+- `function/repositories/base.py` — write methods removed
+- `function/repositories/job_query_repo.py` — aligned to schema
+- `function/repositories/node_query_repo.py` — aligned to schema
+- `function/repositories/event_query_repo.py` — aligned to schema
+- `health/router.py` — version added to health responses
 
-**What replaces it (Phase 4B-REBUILD):**
-- Orchestrator domain HTTP endpoints (new FastAPI router)
-- Gateway mutation endpoints rewritten as proxy calls to orchestrator
-
-#### ~~Phase 4C: DAG Callback Wiring~~ → merged into Phase 4B-REBUILD (see execution steps below)
-
----
-
-## EXECUTION PLAN: Phase 4B Revision
-
-> **Approach**: Delete first, rebuild second. No halfway states — rip out all gateway writes,
-> then build the orchestrator domain endpoints, then rewire gateway as proxy.
-
-### Pass 1: DELETE (remove all gateway write capability)
-
-Each step is independent. Order doesn't matter but numbering is for tracking.
-
-- [ ] **D1. `function/repositories/base.py`** — Delete `execute_write()` (lines 120-136) and `execute_write_returning()` (lines 138-154). Keep `execute_scalar`, `execute_one`, `execute_many`, `execute_count`. Update docstring to remove "Lightweight" hedge — it IS read-only, period.
-
-- [ ] **D2. `function/repositories/asset_query_repo.py`** — Delete 6 write methods:
-  - `get_or_create_asset()` (line 65)
-  - `update_asset_clearance()` (line 156)
-  - `soft_delete_asset()` (line 186)
-  - `create_version()` (line 258)
-  - `update_version_processing()` (line 281)
-  - `update_version_approval()` (line 306)
-  - Update class docstring: "Sync repository for asset-related queries" (remove "and writes").
-  - Keep ALL read methods (`get_asset`, `list_assets`, `count_assets`, `get_version`, `list_versions`, `get_latest_approved_version`, `has_unresolved_versions`, `get_next_ordinal`, `get_platform`, `list_active_platforms`).
-
-- [ ] **D3. `function/blueprints/platform_bp.py`** — Gut the `platform_submit` endpoint (lines 81-206). Delete everything from step 1 (validate platform) through step 8 (update version). Replace with a stub that returns 501 Not Implemented ("Awaiting orchestrator domain endpoint"). Keep `platform_status` (line 213) — it's read-only. Remove `ServiceBusPublisher` and `JobQueueMessage` imports. Remove `_compute_asset_id` helper.
-
-- [ ] **D4. `function/blueprints/asset_bp.py`** — Gut 5 mutation endpoints. Replace each with a stub returning 501:
-  - `version_approve` (line 250)
-  - `version_reject` (line 305)
-  - `asset_mark_cleared` (line 366)
-  - `asset_mark_public` (line 416)
-  - `asset_delete` (line 470)
-  - Keep ALL 6 read endpoints unchanged (`asset_get`, `asset_list`, `version_list`, `version_latest`, `version_get`, `platform_list`).
-
-- [ ] **D5. `function/config.py`** — Remove `SERVICE_BUS_FQDN` and any Service Bus connection config from gateway config. The gateway no longer publishes to Service Bus.
-
-- [ ] **D6. Update `function/models/requests.py`** — Keep `AssetSubmitRequest`, `ApprovalRequest`, `ClearanceRequest` models (gateway still receives these from B2B, just forwards them). No deletions, but verify models don't import anything from orchestrator packages.
-
-- [ ] **D7. Run tests** — `pytest tests/ -v`. Fix any test breakage caused by deletions. Tests in `test_asset_service.py` should be unaffected (they test the orchestrator-side service, not gateway). Tests in `test_domain_models.py` should be unaffected.
-
-- [ ] **D8. Verify imports** — `python -c "from function.blueprints import *"` — confirm no import errors after deletions.
-
-**Delete pass complete when**: Gateway has zero write capability. All mutation endpoints return 501. All read endpoints work. Tests pass.
+#### ~~Phase 4C: DAG Callback Wiring~~ → merged into Phase 4B Pass 2 (REBUILD)
 
 ---
 
-### Pass 2: REBUILD — Orchestrator Domain Authority
+## EXECUTION PLAN: Phase 4B Revision -- DONE (13 FEB 2026)
 
-Build the orchestrator-side HTTP endpoints that the gateway will proxy to.
+> All 4 passes complete. Gateway is read-only proxy, orchestrator is domain authority, all 3 apps deployed.
 
-#### Step R1: Fix `services/asset_service.py` params
+### Pass 1: DELETE -- DONE (12 FEB 2026)
 
-- [ ] **R1a.** Add `correlation_id: Optional[str] = None` parameter to `submit_asset()` signature.
-- [ ] **R1b.** Pass `asset_id=asset_id` and `correlation_id=correlation_id` to `self.job_service.create_job()` call (line 133). Currently missing — causes `dag_jobs.asset_id = NULL`.
-- [ ] **R1c.** Same fix in `reprocess_version()` (line 355) — pass `asset_id` to `create_job()`.
-- [ ] **R1d.** Update `tests/test_asset_service.py` to verify `asset_id` and `correlation_id` are passed through.
+- [x] **D1.** `function/repositories/base.py` — Deleted `execute_write()` and `execute_write_returning()`.
+- [x] **D2.** `function/repositories/asset_query_repo.py` — Deleted 6 write methods, kept all read methods.
+- [x] **D3.** `function/blueprints/platform_bp.py` — Gutted submit endpoint, replaced with 501 stub.
+- [x] **D4.** `function/blueprints/asset_bp.py` — Gutted 5 mutation endpoints, replaced with 501 stubs.
+- [x] **D5.** `function/config.py` — Service Bus config retained (gateway_bp generic submit still uses it).
+- [x] **D6.** `function/models/requests.py` — Models verified, no orchestrator imports.
+- [x] **D7-D8.** Tests pass, imports clean.
 
-#### Step R2: Create orchestrator domain HTTP router
+### Pass 2: REBUILD -- DONE (12 FEB 2026)
 
-- [ ] **R2a.** Create `api/domain_routes.py` — new FastAPI router at `/api/v1/domain/`.
-- [ ] **R2b.** `POST /api/v1/domain/submit` — accepts `AssetSubmitRequest` JSON, calls `asset_service.submit_asset()`, returns asset_id + version_ordinal + job_id + request_id. This is where the atomic asset→version→job creation happens.
-- [ ] **R2c.** `POST /api/v1/domain/assets/{asset_id}/versions/{ordinal}/approve` — calls `asset_service.approve_version()`.
-- [ ] **R2d.** `POST /api/v1/domain/assets/{asset_id}/versions/{ordinal}/reject` — calls `asset_service.reject_version()`.
-- [ ] **R2e.** `POST /api/v1/domain/assets/{asset_id}/clearance/cleared` — calls `asset_service.mark_cleared()`.
-- [ ] **R2f.** `POST /api/v1/domain/assets/{asset_id}/clearance/public` — calls `asset_service.mark_public()`.
-- [ ] **R2g.** `DELETE /api/v1/domain/assets/{asset_id}` — calls `asset_service.soft_delete_asset()`.
-- [ ] **R2h.** Register router in `main.py` (orchestrator FastAPI app).
+- [x] **R1.** Fixed `asset_service.submit_asset()` — passes `asset_id` + `correlation_id` to `create_job()`.
+- [x] **R2.** Created `api/domain_routes.py` — 7 endpoints at `/api/v1/domain/`.
+- [x] **R3.** Wired `asset_service` into `Orchestrator.__init__()` and `main.py`.
+- [x] **R4.** Processing callbacks: `on_processing_completed/failed` in `_check_job_completion()`.
+- [x] **R5.** 17 tests in `tests/test_domain_routes.py`.
 
-#### Step R3: Wire `asset_service` into Orchestrator
+### Pass 3: PROXY -- DONE (12 FEB 2026)
 
-- [ ] **R3a.** Add `asset_service: Optional[GeospatialAssetService] = None` to `Orchestrator.__init__()` (`orchestrator/loop.py` line 75).
-- [ ] **R3b.** Store as `self.asset_service`.
-- [ ] **R3c.** Construct `GeospatialAssetService` in `main.py` and pass to `Orchestrator()`.
+- [x] **P1.** Created `function/services/orchestrator_client.py` — sync httpx client, 6 methods.
+- [x] **P2.** Rewrote `platform_bp.py` submit: validates → proxies → returns B2B-filtered response.
+- [x] **P3.** Rewrote 5 `asset_bp.py` mutation stubs → proxy calls.
+- [x] **P4.** `ORCHESTRATOR_BASE_URL` configured on Azure Function App.
+- [x] **P5.** 13 tests in `tests/test_gateway_proxy.py`.
 
-#### Step R4: Wire processing callbacks into orchestrator loop
+### Pass 4: DEPLOY + VERIFY -- DONE (13 FEB 2026)
 
-- [ ] **R4a.** In `_check_job_completion()` (`orchestrator/loop.py` line 1198), after `complete_job()` (line 1213): call `await self.asset_service.on_processing_completed(job.job_id, result_data)` (guard with `if self.asset_service:`).
-- [ ] **R4b.** After `fail_job()` (line 1227): call `await self.asset_service.on_processing_failed(job.job_id, error)` (guard with `if self.asset_service:`).
-- [ ] **R4c.** These calls are no-ops for standalone jobs (asset_service returns None when no version is linked).
+- [x] **V1.** Schema deployed via `bootstrap/rebuild` (dev DB, fresh schema with `asset_id` column).
+- [x] **V2.** ACR build + deploy orchestrator + worker (`scripts/deploy.sh 0.1.17.0`).
+- [x] **V3.** Gateway deployed (`func azure functionapp publish rmhdaggateway`).
+- [x] **V4.** E2E echo test verified: submit → start → echo_handler → end → COMPLETED (~7s).
+- [x] **V5.** Gateway read endpoints verified: `/api/status/jobs`, `/api/status/stats`, proxy endpoints.
+- [x] **V6.** Tagged as v0.17.0 (commit `43110ba`).
 
-#### Step R5: Unit tests for domain endpoints + callbacks
-
-- [ ] **R5a.** Test `domain_routes.py` endpoints with mocked `asset_service` (happy path + validation errors + state conflicts).
-- [ ] **R5b.** Test callback wiring: mock `asset_service.on_processing_completed/failed` is called when job completes/fails.
-- [ ] **R5c.** Test standalone job (no asset_id) — callback returns None, no error.
-- [ ] **R5d.** Run full suite: `pytest tests/ -v`.
-
-**Rebuild pass complete when**: Orchestrator domain endpoints work. `submit_asset()` passes `asset_id` + `correlation_id`. Processing callbacks fire on job completion/failure. All tests pass.
-
----
-
-### Pass 3: PROXY — Gateway forwards to orchestrator
-
-Rewire the gateway 501 stubs to proxy through to orchestrator domain endpoints.
-
-#### Step P1: Gateway HTTP client
-
-- [ ] **P1a.** Create `function/services/orchestrator_client.py` — lightweight HTTP client wrapping `httpx` (sync, since Azure Functions is sync). Reads `ORCHESTRATOR_BASE_URL` from env.
-- [ ] **P1b.** Methods: `submit(body) -> dict`, `approve(asset_id, ordinal, body) -> dict`, `reject(...)`, `mark_cleared(...)`, `mark_public(...)`, `delete_asset(...)`.
-- [ ] **P1c.** Error handling: map orchestrator HTTP status codes to gateway responses (400→400, 404→404, 409→409, 500→502).
-
-#### Step P2: Rewrite `platform_bp.py` submit
-
-- [ ] **P2a.** Replace 501 stub with: validate JSON → generate `request_id` if not provided → call `orchestrator_client.submit(body)` → return B2B-filtered response (asset_id, version_ordinal, request_id, status="accepted").
-- [ ] **P2b.** Gateway does NOT call `_compute_asset_id` — orchestrator computes it.
-- [ ] **P2c.** Gateway does NOT import `ServiceBusPublisher` or `JobQueueMessage` — orchestrator handles queue.
-
-#### Step P3: Rewrite `asset_bp.py` mutations
-
-- [ ] **P3a.** `version_approve` → call `orchestrator_client.approve(asset_id, ordinal, body)`, relay response.
-- [ ] **P3b.** `version_reject` → call `orchestrator_client.reject(asset_id, ordinal, body)`, relay response.
-- [ ] **P3c.** `asset_mark_cleared` → call `orchestrator_client.mark_cleared(asset_id, body)`, relay response.
-- [ ] **P3d.** `asset_mark_public` → call `orchestrator_client.mark_public(asset_id, body)`, relay response.
-- [ ] **P3e.** `asset_delete` → call `orchestrator_client.delete_asset(asset_id, actor)`, relay response.
-
-#### Step P4: Update gateway RBAC + config
-
-- [ ] **P4a.** Remove `Azure Service Bus Data Sender` from gateway identity (no longer publishes).
-- [ ] **P4b.** Ensure gateway has network access to orchestrator URL (VNet or public endpoint).
-- [ ] **P4c.** Add `ORCHESTRATOR_BASE_URL` to `local.settings.json.example` and Azure Function App config.
-- [ ] **P4d.** PostgreSQL connection for gateway should be read-only user (future hardening).
-
-#### Step P5: Integration test
-
-- [ ] **P5a.** Test proxy flow: gateway → orchestrator → DB → response relayed.
-- [ ] **P5b.** Test error relay: orchestrator returns 409, gateway returns 409 to B2B.
-- [ ] **P5c.** Test orchestrator down: gateway returns 502/503.
-- [ ] **P5d.** Run full suite: `pytest tests/ -v`.
-
-**Proxy pass complete when**: All gateway mutation endpoints proxy to orchestrator. No direct DB writes from gateway. B2B flow works end-to-end. All tests pass.
-
----
-
-### Pass 4: DEPLOY + VERIFY
-
-- [ ] **V1.** Deploy asset tables to Azure: `POST /api/v1/bootstrap/deploy?confirm=yes`
-- [ ] **V2.** ACR build + deploy orchestrator with domain endpoints (`--platform linux/amd64`)
-- [ ] **V3.** Deploy gateway Function App (`func azure functionapp publish`)
-- [ ] **V4.** E2E test: B2B submit → gateway proxy → orchestrator creates asset+version+job → DAG runs → callback updates version → B2B polls status
-- [ ] **V5.** Verify `current_job_id` on version matches actual `job_id` on dag_jobs (the bug that started all this)
-- [ ] **V6.** Tag as v0.17.0
+**Post-deploy fixes (13 FEB 2026):**
+- [x] Gateway auth: removed silent `except ImportError` fallback in `config.py` — now fails fast if MI unavailable.
+- [x] Added `psycopg-pool` to `requirements.txt` (needed by `infrastructure/__init__.py` transitive import).
+- [x] Removed `requirements.txt` from `.funcignore` (Oryx build system needs it).
+- [x] Gateway query repos: aligned 3 repos to current schema (stale column names from early development).
+- [x] Health endpoints: added `version` + `build_date` to all health probes (orchestrator, worker, gateway).
 
 ---
 
@@ -350,14 +273,16 @@ Polish, operational visibility, and production safety.
 
 ## Known Gaps
 
-- [ ] Test coverage (6 test files / 158 tests for ~125 source files -- growing but still minimal)
-- [ ] Function App not yet deployed to Azure (code complete, RBAC + settings configured, needs `func azure functionapp publish`)
-- [x] ~~Function App RBAC not configured~~ -- Done (11 FEB 2026): system-assigned identity for Service Bus, UMI for PostgreSQL
+- [ ] Test coverage (8 test files / 190 tests for ~125 source files — growing but still minimal)
+- [x] ~~Function App not yet deployed to Azure~~ — Done (13 FEB 2026): `rmhdaggateway` deployed, readyz green
+- [x] ~~Function App RBAC not configured~~ — Done (11 FEB 2026): system-assigned identity for Service Bus, UMI for PostgreSQL
 - [ ] CI/CD pipeline not built (GitHub Actions workflow spec exists in IMPL)
-- [x] ~~Retry/timeout logic not yet hardened~~ -- Done (09 FEB 2026): timeout detection, retry wiring, 93 tests
+- [x] ~~Retry/timeout logic not yet hardened~~ — Done (09 FEB 2026): timeout detection, retry wiring, 93 tests
 - [ ] Transaction wrapping for multi-step DB updates (crash between steps = inconsistent state)
 - [ ] More raster handlers needed (COG translation, tiling, STAC registration) for full ingest pipeline
 - [ ] Gateway RBAC needs tightening: remove Service Bus Data Sender, restrict PostgreSQL to read-only
+- [ ] Workflow YAML input defaults not applied to `input_params` before template resolution (YAML says `default: 1` but `StrictUndefined` throws if param missing from `input_params`)
+- [ ] Bootstrap `/migrate` hardcoded migration list needs `asset_id` column added (workaround: use `/rebuild` for dev)
 
 ---
 
@@ -385,14 +310,14 @@ Polish, operational visibility, and production safety.
 - [x] Raster validate handler with blob reference resolution
 - [x] 93 unit tests across 4 test files (now 134 as of v0.1.15.0)
 
-### Phase 4B Revision Complete
-- [ ] Gateway has zero write capability (no `execute_write`, no write methods, no Service Bus publish)
-- [ ] Orchestrator domain endpoints handle all mutations (submit, approve, reject, clearance, delete)
-- [ ] `submit_asset()` passes `asset_id` + `correlation_id` to `create_job()` — no more NULL
-- [ ] `current_job_id` on asset_versions matches actual `job_id` on dag_jobs
-- [ ] Processing callbacks fire on job completion/failure, updating version state
-- [ ] Gateway proxies all mutations through to orchestrator HTTP API
-- [ ] B2B submit → proxy → orchestrator → DAG → callback → poll status works E2E
+### Phase 4B Revision Complete -- DONE (13 FEB 2026)
+- [x] Gateway has zero write capability (no `execute_write`, no write methods, no Service Bus publish)
+- [x] Orchestrator domain endpoints handle all mutations (submit, approve, reject, clearance, delete)
+- [x] `submit_asset()` passes `asset_id` + `correlation_id` to `create_job()` — no more NULL
+- [x] `current_job_id` on asset_versions matches actual `job_id` on dag_jobs
+- [x] Processing callbacks fire on job completion/failure, updating version state
+- [x] Gateway proxies all mutations through to orchestrator HTTP API
+- [ ] B2B submit → proxy → orchestrator → DAG → callback → poll status works E2E (needs platform seed data)
 
 ### Production Ready (Tier 1-5 Complete)
 - [ ] All workflows migrated to DAG

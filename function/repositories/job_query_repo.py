@@ -50,7 +50,7 @@ class JobQueryRepository(FunctionRepository):
                 input_params, result_data, error_message,
                 created_at, started_at, completed_at, updated_at,
                 owner_id, owner_heartbeat_at,
-                correlation_id, asset_id, idempotency_key,
+                correlation_id, asset_id,
                 version, workflow_version
             FROM {self.TABLE}
             WHERE job_id = %s
@@ -72,7 +72,7 @@ class JobQueryRepository(FunctionRepository):
                 job_id, workflow_id, status,
                 input_params, result_data, error_message,
                 created_at, started_at, completed_at, updated_at,
-                owner_id, correlation_id, asset_id, idempotency_key,
+                owner_id, correlation_id, asset_id,
                 workflow_version
             FROM {self.TABLE}
             WHERE correlation_id = %s
@@ -80,27 +80,6 @@ class JobQueryRepository(FunctionRepository):
             LIMIT 1
         """
         return self.execute_one(query, (correlation_id,))
-
-    def get_job_by_idempotency_key(self, key: str) -> Optional[Dict[str, Any]]:
-        """
-        Get job by idempotency key.
-
-        Args:
-            key: Idempotency key
-
-        Returns:
-            Job dict or None if not found
-        """
-        query = f"""
-            SELECT
-                job_id, workflow_id, status,
-                input_params, result_data, error_message,
-                created_at, started_at, completed_at, updated_at,
-                owner_id, correlation_id, idempotency_key
-            FROM {self.TABLE}
-            WHERE idempotency_key = %s
-        """
-        return self.execute_one(query, (key,))
 
     def list_jobs(
         self,

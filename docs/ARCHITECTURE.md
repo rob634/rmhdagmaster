@@ -1,7 +1,7 @@
 # rmhdagmaster Architecture
 
-**Last Updated**: 12 FEB 2026
-**Version**: 0.15.0
+**Last Updated**: 13 FEB 2026
+**Version**: 0.17.0
 
 > For implementation details, task checklists, and code specs, see `IMPLEMENTATION.md`.
 
@@ -2206,10 +2206,11 @@ Operations that fit the direct command model (not yet implemented):
 | Resource | Name | Purpose |
 |----------|------|---------|
 | **ACR** | `rmhazureacr.azurecr.io` | Container registry |
-| **Orchestrator Image** | `rmhdagmaster:v0.12.x` | Lightweight orchestrator |
-| **Worker Image** | `rmhdagworker:v0.12.x` | Heavy GDAL worker |
-| **Web App** | `rmhdagmaster` | Orchestrator + API + UI |
-| **Web App** | `rmhdagworker` | Heavy worker (GDAL tasks) |
+| **Orchestrator Image** | `rmhdagmaster:v0.17.0` | Lightweight orchestrator |
+| **Worker Image** | `rmhdagworker:v0.17.0` | Heavy GDAL worker |
+| **Web App** | `rmhdagmaster` (`rmhdagmaster-gcfzd5bqfxc7g7cv.eastus-01.azurewebsites.net`) | Orchestrator + API + UI |
+| **Web App** | `rmhdagworker` (`rmhdagworker-fedshwfme6drd6gq.eastus-01.azurewebsites.net`) | Heavy worker (GDAL tasks) |
+| **Function App** | `rmhdaggateway` (`rmhdaggateway-f7epa0d6bnc6bzak.eastus-01.azurewebsites.net`) | Gateway: read-only ACL proxy |
 | **PostgreSQL** | `rmhpostgres.postgres.database.azure.com` | Shared database |
 | **Service Bus** | `rmhazure.servicebus.windows.net` | Task queues |
 | **Managed Identity** | `rmhpgflexadmin` | Authentication (UMI) |

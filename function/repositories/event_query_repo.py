@@ -50,11 +50,11 @@ class EventQueryRepository(FunctionRepository):
             query = f"""
                 SELECT
                     event_id, job_id, node_id,
-                    event_type, event_status, message,
-                    details, timestamp
+                    event_type, event_status, error_message,
+                    event_data, duration_ms, created_at
                 FROM {self.TABLE}
                 WHERE job_id = %s AND event_type = %s
-                ORDER BY timestamp DESC
+                ORDER BY created_at DESC
                 LIMIT %s
             """
             return self.execute_many(query, (job_id, event_type, limit))
@@ -62,11 +62,11 @@ class EventQueryRepository(FunctionRepository):
             query = f"""
                 SELECT
                     event_id, job_id, node_id,
-                    event_type, event_status, message,
-                    details, timestamp
+                    event_type, event_status, error_message,
+                    event_data, duration_ms, created_at
                 FROM {self.TABLE}
                 WHERE job_id = %s
-                ORDER BY timestamp DESC
+                ORDER BY created_at DESC
                 LIMIT %s
             """
             return self.execute_many(query, (job_id, limit))
@@ -90,11 +90,11 @@ class EventQueryRepository(FunctionRepository):
             query = f"""
                 SELECT
                     event_id, job_id, node_id,
-                    event_type, event_status, message,
-                    details, timestamp
+                    event_type, event_status, error_message,
+                    event_data, duration_ms, created_at
                 FROM {self.TABLE}
                 WHERE event_type = %s
-                ORDER BY timestamp DESC
+                ORDER BY created_at DESC
                 LIMIT %s
             """
             return self.execute_many(query, (event_type, limit))
@@ -102,10 +102,10 @@ class EventQueryRepository(FunctionRepository):
             query = f"""
                 SELECT
                     event_id, job_id, node_id,
-                    event_type, event_status, message,
-                    details, timestamp
+                    event_type, event_status, error_message,
+                    event_data, duration_ms, created_at
                 FROM {self.TABLE}
-                ORDER BY timestamp DESC
+                ORDER BY created_at DESC
                 LIMIT %s
             """
             return self.execute_many(query, (limit,))
@@ -157,11 +157,11 @@ class EventQueryRepository(FunctionRepository):
             query = f"""
                 SELECT
                     event_id, job_id, node_id,
-                    event_type, event_status, message,
-                    details, timestamp
+                    event_type, event_status, error_message,
+                    event_data, duration_ms, created_at
                 FROM {self.TABLE}
                 WHERE job_id = %s AND event_status = 'error'
-                ORDER BY timestamp DESC
+                ORDER BY created_at DESC
                 LIMIT %s
             """
             return self.execute_many(query, (job_id, limit))
@@ -169,11 +169,11 @@ class EventQueryRepository(FunctionRepository):
             query = f"""
                 SELECT
                     event_id, job_id, node_id,
-                    event_type, event_status, message,
-                    details, timestamp
+                    event_type, event_status, error_message,
+                    event_data, duration_ms, created_at
                 FROM {self.TABLE}
                 WHERE event_status = 'error'
-                ORDER BY timestamp DESC
+                ORDER BY created_at DESC
                 LIMIT %s
             """
             return self.execute_many(query, (limit,))
@@ -194,11 +194,11 @@ class EventQueryRepository(FunctionRepository):
         query = f"""
             SELECT
                 event_id, job_id, node_id,
-                event_type, event_status, message,
-                timestamp
+                event_type, event_status, error_message,
+                event_data, duration_ms, created_at
             FROM {self.TABLE}
             WHERE job_id = %s
-            ORDER BY timestamp ASC
+            ORDER BY created_at ASC
         """
         return self.execute_many(query, (job_id,))
 

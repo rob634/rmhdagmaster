@@ -30,27 +30,28 @@ class NodeQueryRepository(FunctionRepository):
 
     TABLE = "dagapp.dag_node_states"
 
-    def get_node(self, node_id: str) -> Optional[Dict[str, Any]]:
+    def get_node(self, job_id: str, node_id: str) -> Optional[Dict[str, Any]]:
         """
-        Get node by ID.
+        Get node by composite PK (job_id, node_id).
 
         Args:
-            node_id: Unique node identifier
+            job_id: Parent job ID
+            node_id: Node identifier within the job
 
         Returns:
             Node dict or None if not found
         """
         query = f"""
             SELECT
-                node_id, job_id, node_name, status,
-                handler_name, input_data, result_data,
-                error_message, task_queue,
-                created_at, started_at, completed_at, updated_at,
+                node_id, job_id, status, task_id,
+                input_params, output,
+                error_message, retry_count, max_retries,
+                created_at, dispatched_at, started_at, completed_at, updated_at,
                 version
             FROM {self.TABLE}
-            WHERE node_id = %s
+            WHERE job_id = %s AND node_id = %s
         """
-        return self.execute_one(query, (node_id,))
+        return self.execute_one(query, (job_id, node_id))
 
     def get_nodes_for_job(self, job_id: str) -> List[Dict[str, Any]]:
         """
@@ -64,10 +65,10 @@ class NodeQueryRepository(FunctionRepository):
         """
         query = f"""
             SELECT
-                node_id, job_id, node_name, status,
-                handler_name, input_data, result_data,
-                error_message, task_queue,
-                created_at, started_at, completed_at
+                node_id, job_id, status, task_id,
+                input_params, output,
+                error_message, retry_count,
+                created_at, dispatched_at, started_at, completed_at
             FROM {self.TABLE}
             WHERE job_id = %s
             ORDER BY created_at ASC
@@ -87,9 +88,9 @@ class NodeQueryRepository(FunctionRepository):
         """
         query = f"""
             SELECT
-                node_id, job_id, node_name, status,
-                handler_name, error_message,
-                created_at, started_at, completed_at
+                node_id, job_id, status, task_id,
+                error_message, retry_count,
+                created_at, dispatched_at, started_at, completed_at
             FROM {self.TABLE}
             WHERE job_id = %s AND status = %s
             ORDER BY created_at ASC
@@ -128,8 +129,8 @@ class NodeQueryRepository(FunctionRepository):
         if job_id:
             query = f"""
                 SELECT
-                    node_id, job_id, node_name, status,
-                    handler_name, task_queue, started_at
+                    node_id, job_id, status, task_id,
+                    started_at
                 FROM {self.TABLE}
                 WHERE job_id = %s AND status = 'running'
                 ORDER BY started_at ASC
@@ -138,8 +139,8 @@ class NodeQueryRepository(FunctionRepository):
         else:
             query = f"""
                 SELECT
-                    node_id, job_id, node_name, status,
-                    handler_name, task_queue, started_at
+                    node_id, job_id, status, task_id,
+                    started_at
                 FROM {self.TABLE}
                 WHERE status = 'running'
                 ORDER BY started_at ASC
@@ -160,8 +161,8 @@ class NodeQueryRepository(FunctionRepository):
         if job_id:
             query = f"""
                 SELECT
-                    node_id, job_id, node_name, status,
-                    handler_name, error_message,
+                    node_id, job_id, status, task_id,
+                    error_message, retry_count,
                     started_at, completed_at
                 FROM {self.TABLE}
                 WHERE job_id = %s AND status = 'failed'
@@ -172,8 +173,8 @@ class NodeQueryRepository(FunctionRepository):
         else:
             query = f"""
                 SELECT
-                    node_id, job_id, node_name, status,
-                    handler_name, error_message,
+                    node_id, job_id, status, task_id,
+                    error_message, retry_count,
                     started_at, completed_at
                 FROM {self.TABLE}
                 WHERE status = 'failed'

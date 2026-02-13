@@ -23,6 +23,7 @@ from datetime import datetime, timezone
 
 import azure.functions as func
 
+from __version__ import __version__, BUILD_DATE
 from function.config import get_config
 from function.models.responses import ErrorResponse
 from function.repositories.job_query_repo import JobQueryRepository
@@ -86,7 +87,8 @@ def admin_health(req: func.HttpRequest) -> func.HttpResponse:
         "status": "healthy" if all_healthy else "degraded",
         "checks": checks,
         "timestamp": datetime.now(timezone.utc).isoformat(),
-        "version": config.version,
+        "version": __version__,
+        "build_date": BUILD_DATE,
         "service": config.service_name,
     })
 
@@ -109,7 +111,8 @@ def admin_config(req: func.HttpRequest) -> func.HttpResponse:
         "db_schema": config.db_schema,
         "orchestrator_url": config.orchestrator_url,
         "worker_url": config.worker_url,
-        "version": config.version,
+        "version": __version__,
+        "build_date": BUILD_DATE,
         "service_name": config.service_name,
     }
 

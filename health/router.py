@@ -41,6 +41,7 @@ from fastapi.responses import JSONResponse
 from health.core import HealthStatus, HealthCheckResult
 from health.registry import get_registry
 from health.executor import HealthCheckExecutor
+from __version__ import __version__, BUILD_DATE
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +72,7 @@ async def liveness_probe():
 
     No external checks - just confirms the process is responsive.
     """
-    return {"status": "alive"}
+    return {"status": "alive", "version": __version__, "build_date": BUILD_DATE}
 
 
 # ============================================================================
@@ -167,6 +168,8 @@ async def full_health_check():
     http_code = _status_to_http_code(result.status)
 
     response_body = result.to_dict()
+    response_body["version"] = __version__
+    response_body["build_date"] = BUILD_DATE
 
     # Add summary by category
     summary = {}
