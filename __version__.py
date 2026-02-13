@@ -11,10 +11,10 @@ Updated manually for each release.
 """
 # Version format: major.minor.patch.build
 # Criteria for 0.2.0.0 - complete echo test works
-__version__ = "0.1.15.0"
+__version__ = "0.1.17.0"
 __version_info__ = tuple(int(x) for x in __version__.split("."))
 
 # Build metadata
-BUILD_DATE = "2026-02-09"
+BUILD_DATE = "2026-02-12"
 EPOCH = 5
 CODENAME = "DAG Orchestrator"
