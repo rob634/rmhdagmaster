@@ -101,10 +101,11 @@ class TemplateResolver:
             inner = stripped[2:-2].strip()
             if '{{' not in inner and '}}' not in inner:
                 try:
-                    template = self._env.from_string(value)
-                    result = template.render(context)
-                    # Try to evaluate as Python literal for complex types
-                    return self._maybe_parse_result(result)
+                    # Use compile_expression to get native Python types
+                    # (dicts, lists, ints) instead of rendering to string
+                    # and trying to parse back with ast.literal_eval
+                    expr = self._env.compile_expression(inner)
+                    return expr(**context)
                 except (TemplateSyntaxError, UndefinedError) as e:
                     raise TemplateResolutionError(f"Failed to resolve '{value}': {e}")
 
@@ -114,32 +115,6 @@ class TemplateResolver:
             return template.render(context)
         except (TemplateSyntaxError, UndefinedError) as e:
             raise TemplateResolutionError(f"Failed to resolve '{value}': {e}")
-
-    def _maybe_parse_result(self, result: str) -> Any:
-        """Try to parse result as Python literal (for lists, dicts, etc.)."""
-        result = result.strip()
-        if not result:
-            return result
-
-        # If it looks like a Python literal, try to parse it
-        if (result.startswith('[') and result.endswith(']')) or \
-           (result.startswith('{') and result.endswith('}')):
-            try:
-                import ast
-                return ast.literal_eval(result)
-            except (ValueError, SyntaxError):
-                pass
-
-        # Try to parse as number
-        try:
-            if '.' in result:
-                return float(result)
-            return int(result)
-        except ValueError:
-            pass
-
-        # Return as string
-        return result
 
     def has_templates(self, params: Dict[str, Any]) -> bool:
         """Check if params contain any template expressions."""

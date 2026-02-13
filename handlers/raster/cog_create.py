@@ -30,17 +30,29 @@ DOES NOT INCLUDE (removed from Epoch 4):
 - In-memory mode (always use disk)
 """
 
+import asyncio
 import os
 import hashlib
 import logging
 from pathlib import Path
 from typing import Any, Dict
-from datetime import datetime
+from datetime import datetime, timezone
 
 from handlers.registry import register_handler, HandlerContext, HandlerResult
 from infrastructure.storage import BlobRepository
 
 logger = logging.getLogger(__name__)
+
+# GDAL/rio-cogeo imports — available on heavy worker image only
+try:
+    import rasterio
+    from rasterio.vrt import WarpedVRT
+    from rio_cogeo.cogeo import cog_translate
+    from rio_cogeo.profiles import cog_profiles
+    COGEO_AVAILABLE = True
+except ImportError:
+    COGEO_AVAILABLE = False
+    logger.warning("rio-cogeo not available - create_cog handler requires worker image")
 
 
 @register_handler("raster.create_cog", queue="container-tasks", timeout_seconds=7200)
@@ -71,7 +83,12 @@ async def create_cog(ctx: HandlerContext) -> HandlerResult:
     output_folder = ctx.params.get("output_folder", "")
 
     logger.info(f"Creating COG from: {local_path}")
-    start_time = datetime.utcnow()
+    start_time = datetime.now(timezone.utc)
+
+    if not COGEO_AVAILABLE:
+        return HandlerResult.failure_result(
+            "MISSING_DEPENDENCY: rio-cogeo/rasterio not available on this worker"
+        )
 
     # Extract validation data
     source_crs = validation["source_crs"]
@@ -89,48 +106,59 @@ async def create_cog(ctx: HandlerContext) -> HandlerResult:
     # =========================================================================
     # COG Creation with cog_translate
     # =========================================================================
-    # TODO: Import and use rio-cogeo
-    # from rio_cogeo.cogeo import cog_translate
-    # from rio_cogeo.profiles import cog_profiles
-    #
-    # Logic from rmhgeoapi/services/raster_cog.py:
-    #
-    # # Get profile from compression type
-    # profile = _get_cog_profile(compression_profile)
-    #
-    # # Build config
-    # config = {
-    #     "GDAL_TIFF_INTERNAL_MASK": True,
-    #     "GDAL_TIFF_OVR_BLOCKSIZE": 512,
-    # }
-    #
-    # # Determine if reprojection needed
-    # needs_reproject = source_crs != target_crs
-    #
-    # if needs_reproject:
-    #     # cog_translate with dst_crs does both in one pass
-    #     cog_translate(
-    #         local_path,
-    #         cog_local_path,
-    #         profile,
-    #         dst_crs=target_crs,
-    #         resampling=compression_profile["reproject_resampling"],
-    #         overview_resampling=compression_profile["overview_resampling"],
-    #         config=config,
-    #         overview_level=8,
-    #         use_cog_driver=True,
-    #     )
-    # else:
-    #     # No reprojection needed
-    #     cog_translate(
-    #         local_path,
-    #         cog_local_path,
-    #         profile,
-    #         overview_resampling=compression_profile["overview_resampling"],
-    #         config=config,
-    #         overview_level=8,
-    #         use_cog_driver=True,
-    #     )
+    dst_kwargs = _get_cog_profile(compression_profile)
+    overview_resampling = compression_profile.get("overview_resampling", "cubic")
+
+    config = {
+        "GDAL_NUM_THREADS": "ALL_CPUS",
+        "GDAL_TIFF_INTERNAL_MASK": True,
+        "GDAL_TIFF_OVR_BLOCKSIZE": 512,
+    }
+
+    needs_reproject = source_crs != target_crs
+
+    try:
+        if needs_reproject:
+            logger.info(
+                f"[Node D+E] Reprojecting {source_crs} -> {target_crs} + COG creation"
+            )
+            # WarpedVRT handles reprojection — cog_translate does NOT accept dst_crs
+            def _translate_with_reproject():
+                with rasterio.open(local_path) as src:
+                    with WarpedVRT(src, crs=target_crs) as vrt:
+                        cog_translate(
+                            vrt,
+                            cog_local_path,
+                            dst_kwargs,
+                            overview_level=6,
+                            overview_resampling=overview_resampling,
+                            allow_intermediate_compression=True,
+                            config=config,
+                            quiet=True,
+                        )
+
+            await asyncio.to_thread(_translate_with_reproject)
+        else:
+            logger.info(f"[Node D+E] COG creation (no reprojection needed)")
+
+            def _translate_no_reproject():
+                cog_translate(
+                    local_path,
+                    cog_local_path,
+                    dst_kwargs,
+                    overview_level=6,
+                    overview_resampling=overview_resampling,
+                    allow_intermediate_compression=True,
+                    config=config,
+                    quiet=True,
+                )
+
+            await asyncio.to_thread(_translate_no_reproject)
+
+    except Exception as e:
+        error_msg = f"COG creation failed: {e}"
+        logger.error(f"[Node D+E] {error_msg}")
+        return HandlerResult.failure_result(error_msg)
 
     logger.info(f"[Node D+E] COG created at: {cog_local_path}")
 
@@ -186,7 +214,7 @@ async def create_cog(ctx: HandlerContext) -> HandlerResult:
         return HandlerResult.failure_result(error_msg)
 
     # Calculate timing
-    end_time = datetime.utcnow()
+    end_time = datetime.now(timezone.utc)
     processing_seconds = (end_time - start_time).total_seconds()
 
     logger.info(
@@ -217,23 +245,18 @@ def _generate_cog_filename(source_basename: str) -> str:
     return f"{name}_cog.tif"
 
 
-def _get_cog_profile(compression_profile: Dict[str, Any]) -> str:
+def _get_cog_profile(compression_profile: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Get rio-cogeo profile name from compression settings.
+    Get rio-cogeo creation options dict from compression settings.
 
-    Copy from: rmhgeoapi/services/raster_cog.py:_get_cog_profile()
+    Uses cog_profiles.get() to fetch the GDAL creation options dict
+    that cog_translate expects as dst_kwargs.
     """
     compression = compression_profile.get("compression", "deflate")
+    profile = cog_profiles.get(compression)
 
-    profile_map = {
-        "jpeg": "jpeg",
-        "webp": "webp",
-        "deflate": "deflate",
-        "lzw": "lzw",
-        "zstd": "zstd",
-        "lerc": "lerc",
-        "lerc_deflate": "lerc_deflate",
-        "lerc_zstd": "lerc_zstd",
-    }
+    # JPEG quality override
+    if compression == "jpeg" and "jpeg_quality" in compression_profile:
+        profile["QUALITY"] = compression_profile["jpeg_quality"]
 
-    return profile_map.get(compression, "deflate")
+    return profile
