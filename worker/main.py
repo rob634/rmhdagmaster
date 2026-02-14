@@ -22,15 +22,15 @@ Usage:
     python worker/main.py
 
 Environment Variables:
-    WORKER_ID: Unique worker identifier
-    WORKER_TYPE: "docker" or "functionapp"
-    WORKER_QUEUE: Queue name to listen on
-    SERVICEBUS_CONNECTION_STRING: Service Bus connection
-    SERVICE_BUS_FQDN: Service Bus namespace (if using managed identity)
+    DAG_WORKER_ID: Unique worker identifier
+    DAG_WORKER_TYPE: "docker" or "functionapp"
+    DAG_WORKER_QUEUE: Queue name to listen on
+    DAG_SERVICEBUS_CONNECTION_STRING: Service Bus connection
+    DAG_SERVICEBUS_FQDN: Service Bus namespace (if using managed identity)
     USE_MANAGED_IDENTITY: "true" to use Azure managed identity
-    DATABASE_URL: PostgreSQL connection (for direct result reporting)
+    DAG_DB_URL: PostgreSQL connection (for direct result reporting)
     DAG_CALLBACK_URL: HTTP callback URL (alternative to DB)
-    MAX_CONCURRENT_TASKS: Max concurrent task execution
+    DAG_WORKER_MAX_CONCURRENT: Max concurrent task execution
     HANDLER_MODULES: Comma-separated list of handler modules to load
 """
 
@@ -189,7 +189,7 @@ async def main() -> None:
     if not config.service_bus_connection and not config.service_bus_namespace:
         logger.error(
             "No Service Bus connection configured. "
-            "Set SERVICEBUS_CONNECTION_STRING or SERVICE_BUS_FQDN"
+            "Set DAG_SERVICEBUS_CONNECTION_STRING or DAG_SERVICEBUS_FQDN"
         )
         _worker_healthy = False
         _worker_status = "no_service_bus"

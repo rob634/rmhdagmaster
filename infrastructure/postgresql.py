@@ -20,9 +20,9 @@ Provides database connectivity for DAG orchestrator and workers:
 Adapted from rmhgeoapi/infrastructure/postgresql.py for DAG orchestrator.
 
 Authentication Priority:
-1. User-assigned managed identity (DB_ADMIN_MANAGED_IDENTITY_CLIENT_ID)
+1. User-assigned managed identity (AZURE_CLIENT_ID / DAG_DB_IDENTITY_CLIENT_ID)
 2. System-assigned managed identity (WEBSITE_SITE_NAME detected)
-3. Password authentication (POSTGRES_PASSWORD - dev only)
+3. Password authentication (DAG_DB_PASSWORD - dev only)
 """
 
 import os

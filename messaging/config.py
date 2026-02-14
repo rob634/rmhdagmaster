@@ -54,11 +54,11 @@ class MessagingConfig:
         Load configuration from environment variables.
 
         For connection string auth:
-            SERVICEBUS_CONNECTION_STRING: Service Bus connection string
+            DAG_SERVICEBUS_CONNECTION_STRING: Service Bus connection string
 
         For managed identity auth:
             USE_MANAGED_IDENTITY: Set to "true" to use managed identity
-            SERVICE_BUS_FQDN: Fully qualified namespace (e.g., rmhazure.servicebus.windows.net)
+            DAG_SERVICEBUS_FQDN: Fully qualified namespace (e.g., rmhazure.servicebus.windows.net)
             AZURE_CLIENT_ID: Optional client ID for user-assigned managed identity
 
         Common:

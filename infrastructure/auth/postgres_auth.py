@@ -23,14 +23,14 @@ Environment Variables:
 ---------------------
 USE_MANAGED_IDENTITY=true (required for UMI auth)
 AZURE_CLIENT_ID=<guid>  # User-assigned MI client ID
-DB_ADMIN_MANAGED_IDENTITY_NAME=<identity-name>  # PostgreSQL user name
-POSTGRES_HOST=<server>.postgres.database.azure.com
-POSTGRES_DB=<database>
-POSTGRES_PORT=5432
+DAG_DB_IDENTITY_NAME=<identity-name>  # PostgreSQL user name
+DAG_DB_HOST=<server>.postgres.database.azure.com
+DAG_DB_NAME=<database>
+DAG_DB_PORT=5432
 
 For password auth (local development):
-POSTGRES_USER=<user>
-POSTGRES_PASSWORD=<password>
+DAG_DB_USER=<user>
+DAG_DB_PASSWORD=<password>
 USE_MANAGED_IDENTITY=false
 
 Usage:
@@ -135,9 +135,9 @@ def get_postgres_token() -> Optional[str]:
         return cached
 
     # Acquire new token
-    host = _get_env("POSTGRES_HOST", "localhost")
-    database = _get_env("POSTGRES_DB", "postgres")
-    identity_name = _get_env("DB_ADMIN_MANAGED_IDENTITY_NAME", "")
+    host = _get_env("DAG_DB_HOST", "localhost")
+    database = _get_env("DAG_DB_NAME", "postgres")
+    identity_name = _get_env("DAG_DB_IDENTITY_NAME", "")
 
     logger.info("=" * 60)
     logger.info("Acquiring PostgreSQL OAuth token...")
@@ -151,7 +151,7 @@ def get_postgres_token() -> Optional[str]:
         from azure.core.exceptions import ClientAuthenticationError
 
         # Use user-assigned MI if client ID is set
-        client_id = _get_env("AZURE_CLIENT_ID") or _get_env("DB_ADMIN_MANAGED_IDENTITY_CLIENT_ID")
+        client_id = _get_env("AZURE_CLIENT_ID") or _get_env("DAG_DB_IDENTITY_CLIENT_ID")
 
         if client_id:
             logger.info(f"Using user-assigned Managed Identity: {client_id[:8]}...")
@@ -203,24 +203,24 @@ def get_postgres_connection_string() -> str:
         ValueError: If no authentication method is configured.
         Exception: If token acquisition fails.
     """
-    host = _get_env("POSTGRES_HOST", "localhost")
-    port = _get_env("POSTGRES_PORT", "5432")
-    database = _get_env("POSTGRES_DB", "postgres")
+    host = _get_env("DAG_DB_HOST", "localhost")
+    port = _get_env("DAG_DB_PORT", "5432")
+    database = _get_env("DAG_DB_NAME", "postgres")
 
     if not _use_managed_identity():
         # Fall back to password auth
-        user = _get_env("POSTGRES_USER", "postgres")
-        password = _get_env("POSTGRES_PASSWORD", "")
+        user = _get_env("DAG_DB_USER", "postgres")
+        password = _get_env("DAG_DB_PASSWORD", "")
 
         if not password:
             # Check for DATABASE_URL
-            database_url = _get_env("DATABASE_URL")
+            database_url = _get_env("DAG_DB_URL")
             if database_url:
                 return database_url
 
             raise ValueError(
                 "No PostgreSQL authentication configured. "
-                "Set USE_MANAGED_IDENTITY=true or provide POSTGRES_PASSWORD or DATABASE_URL"
+                "Set USE_MANAGED_IDENTITY=true or provide DAG_DB_PASSWORD or DAG_DB_URL"
             )
 
         return (
@@ -238,7 +238,7 @@ def get_postgres_connection_string() -> str:
         raise ValueError("Failed to acquire PostgreSQL OAuth token")
 
     # Build connection string with token as password
-    identity_name = _get_env("DB_ADMIN_MANAGED_IDENTITY_NAME", "")
+    identity_name = _get_env("DAG_DB_IDENTITY_NAME", "")
 
     return (
         f"host={host} "

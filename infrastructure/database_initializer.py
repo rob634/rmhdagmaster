@@ -134,13 +134,13 @@ class DatabaseInitializer:
         Initialize the database initializer.
 
         Uses environment variables for database configuration:
-        - POSTGRES_HOST, POSTGRES_DB for connection info
+        - DAG_DB_HOST, DAG_DB_NAME for connection info
         - USE_MANAGED_IDENTITY for Azure AD auth
         """
         import os
 
-        self.host = os.environ.get("POSTGRES_HOST", "localhost")
-        self.database = os.environ.get("POSTGRES_DB", "postgres")
+        self.host = os.environ.get("DAG_DB_HOST", "localhost")
+        self.database = os.environ.get("DAG_DB_NAME", "postgres")
 
         # Repositories are created lazily
         self._sync_repo = None

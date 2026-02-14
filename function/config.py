@@ -15,7 +15,7 @@ queries and orchestrator URL for forwarding mutations.
 
 Database auth uses the same env vars and auth module as the orchestrator:
 - USE_MANAGED_IDENTITY=true → UMI token via infrastructure/auth
-- Otherwise → POSTGRES_PASSWORD or DATABASE_URL
+- Otherwise → DAG_DB_PASSWORD or DAG_DB_URL
 """
 
 import os

@@ -106,7 +106,7 @@ class BlobRepository:
             try:
                 # Check for User-Assigned Managed Identity
                 client_id = os.environ.get("AZURE_CLIENT_ID") or os.environ.get(
-                    "DB_ADMIN_MANAGED_IDENTITY_CLIENT_ID"
+                    "DAG_DB_IDENTITY_CLIENT_ID"
                 )
 
                 if client_id:

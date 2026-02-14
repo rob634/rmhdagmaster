@@ -90,19 +90,16 @@ class ServiceBusCheck(HealthCheckPlugin):
 
     async def check(self) -> HealthCheckResult:
         # Check configuration
-        connection_string = os.environ.get("SERVICE_BUS_CONNECTION_STRING")
-        namespace = os.environ.get("SERVICE_BUS_NAMESPACE")
-        fqdn = os.environ.get("SERVICE_BUS_FQDN")
+        connection_string = os.environ.get("DAG_SERVICEBUS_CONNECTION_STRING")
+        fqdn = os.environ.get("DAG_SERVICEBUS_FQDN")
 
-        if not connection_string and not namespace and not fqdn:
+        if not connection_string and not fqdn:
             return HealthCheckResult.degraded(
                 message="Service Bus not configured",
-                hint="Set SERVICE_BUS_FQDN, SERVICE_BUS_NAMESPACE, or SERVICE_BUS_CONNECTION_STRING",
+                hint="Set DAG_SERVICEBUS_FQDN or DAG_SERVICEBUS_CONNECTION_STRING",
             )
 
-        # Use FQDN as namespace if set
-        if not namespace and fqdn:
-            namespace = fqdn
+        namespace = fqdn
 
         try:
             from messaging import get_publisher

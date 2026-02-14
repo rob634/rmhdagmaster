@@ -160,7 +160,7 @@ def _validate_env_vars() -> ValidationResult:
             name="env_vars",
             passed=False,
             error_type="MissingEnvVar",
-            error_message="SERVICE_BUS_NAMESPACE or SERVICE_BUS_CONNECTION_STRING required",
+            error_message="DAG_SERVICEBUS_FQDN or DAG_SERVICEBUS_CONNECTION_STRING required",
         )
 
     return ValidationResult(name="env_vars", passed=True)
