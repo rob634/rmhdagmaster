@@ -378,16 +378,16 @@ class WorkerConfig:
         import socket
 
         return cls(
-            worker_id=os.getenv("WORKER_ID", f"worker-{socket.gethostname()}"),
-            worker_type=os.getenv("WORKER_TYPE", "docker"),
-            queue_name=os.getenv("WORKER_QUEUE", ""),
-            service_bus_connection=os.getenv("SERVICEBUS_CONNECTION_STRING"),
-            service_bus_namespace=os.getenv("SERVICE_BUS_FQDN"),
+            worker_id=os.getenv("DAG_WORKER_ID", f"worker-{socket.gethostname()}"),
+            worker_type=os.getenv("DAG_WORKER_TYPE", "docker"),
+            queue_name=os.getenv("DAG_WORKER_QUEUE", ""),
+            service_bus_connection=os.getenv("DAG_SERVICEBUS_CONNECTION_STRING"),
+            service_bus_namespace=os.getenv("DAG_SERVICEBUS_FQDN"),
             use_managed_identity=os.getenv("USE_MANAGED_IDENTITY", "").lower() == "true",
-            database_url=os.getenv("DATABASE_URL"),
+            database_url=os.getenv("DAG_DB_URL"),
             callback_url=os.getenv("DAG_CALLBACK_URL"),
-            max_concurrent_tasks=int(os.getenv("MAX_CONCURRENT_TASKS", "1")),
-            shutdown_timeout_seconds=int(os.getenv("SHUTDOWN_TIMEOUT", "30")),
+            max_concurrent_tasks=int(os.getenv("DAG_WORKER_MAX_CONCURRENT", "1")),
+            shutdown_timeout_seconds=int(os.getenv("DAG_WORKER_SHUTDOWN_TIMEOUT_SEC", "30")),
         )
 
 

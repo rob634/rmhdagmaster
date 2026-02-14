@@ -172,7 +172,7 @@ async def process_tile_batch(ctx: HandlerContext) -> HandlerResult:
     # =========================================================================
     # Process tiles sequentially with checkpoints
     # =========================================================================
-    mount_base = os.environ.get("ETL_MOUNT_PATH", "/mnt/etl")
+    mount_base = os.environ.get("DAG_WORKER_ETL_MOUNT_PATH", "/mnt/etl")
     cog_container = "silver-cogs"
     tile_cogs = list(completed_tiles)  # Copy already completed
 

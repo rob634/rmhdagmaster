@@ -4,17 +4,17 @@
     "FUNCTIONS_WORKER_RUNTIME": "python",
     "AzureWebJobsStorage": "UseDevelopmentStorage=true",
 
-    "SERVICE_BUS_NAMESPACE": "your-namespace.servicebus.windows.net",
-    "JOB_QUEUE_NAME": "dag-jobs",
+    "DAG_SERVICEBUS_FQDN": "your-namespace.servicebus.windows.net",
+    "DAG_JOB_QUEUE": "dag-jobs",
 
-    "POSTGIS_HOST": "your-postgres-server.postgres.database.azure.com",
-    "POSTGIS_PORT": "5432",
-    "POSTGIS_DATABASE": "dagmaster",
-    "POSTGIS_USER": "your-username",
-    "POSTGIS_PASSWORD": "your-password",
+    "DAG_DB_HOST": "your-postgres-server.postgres.database.azure.com",
+    "DAG_DB_PORT": "5432",
+    "DAG_DB_NAME": "dagmaster",
+    "DAG_DB_USER": "your-username",
+    "DAG_DB_PASSWORD": "your-password",
 
-    "ORCHESTRATOR_URL": "https://your-orchestrator.azurewebsites.net",
-    "WORKER_URL": "https://your-worker.azurewebsites.net"
+    "GATEWAY_ORCHESTRATOR_URL": "https://your-orchestrator.azurewebsites.net",
+    "GATEWAY_WORKER_URL": "https://your-worker.azurewebsites.net"
   },
   "Host": {
     "CORS": "*"

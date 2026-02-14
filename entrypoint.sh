@@ -9,11 +9,11 @@
 
 set -e
 
-RUN_MODE=${RUN_MODE:-orchestrator}
+RUN_MODE=${DAG_RUN_MODE:-orchestrator}
 
 echo "=============================================="
 echo "DAG Platform Starting"
-echo "RUN_MODE: $RUN_MODE"
+echo "DAG_RUN_MODE: $RUN_MODE"
 echo "=============================================="
 
 case "$RUN_MODE" in
@@ -26,7 +26,7 @@ case "$RUN_MODE" in
         exec python -m worker.main
         ;;
     *)
-        echo "ERROR: Unknown RUN_MODE: $RUN_MODE"
+        echo "ERROR: Unknown DAG_RUN_MODE: $RUN_MODE"
         echo "Valid modes: orchestrator, worker"
         exit 1
         ;;

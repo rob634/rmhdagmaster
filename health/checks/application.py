@@ -52,7 +52,7 @@ class OrchestratorCheck(HealthCheckPlugin):
     required_for_ready = True
 
     async def check(self) -> HealthCheckResult:
-        run_mode = os.environ.get("RUN_MODE", "orchestrator")
+        run_mode = os.environ.get("DAG_RUN_MODE", "orchestrator")
 
         if run_mode != "orchestrator":
             return HealthCheckResult.healthy(

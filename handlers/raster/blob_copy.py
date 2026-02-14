@@ -54,15 +54,13 @@ async def blob_to_mount(ctx: HandlerContext) -> HandlerResult:
     logger.info(f"[Node A] Starting blob copy: {container_name}/{blob_name}")
 
     # Determine mount path
-    mount_base = os.environ.get("ETL_MOUNT_PATH", "/mnt/etl")
+    mount_base = os.environ.get("DAG_WORKER_ETL_MOUNT_PATH", "/mnt/etl")
 
     # Preserve directory structure from blob path
     local_path = os.path.join(mount_base, "input", blob_name)
 
-    # Get repository for source zone (typically bronze)
-    # Container name hints at zone: bronze-rasters -> bronze
-    zone = _detect_zone_from_container(container_name)
-    repo = BlobRepository.for_zone(zone) if zone else BlobRepository()
+    # Source data lives in bronze zone
+    repo = BlobRepository.for_zone("bronze")
 
     # Check if blob exists first
     if not repo.blob_exists(container_name, blob_name):
@@ -116,26 +114,3 @@ async def blob_to_mount(ctx: HandlerContext) -> HandlerResult:
     })
 
 
-def _detect_zone_from_container(container_name: str) -> str:
-    """
-    Detect storage zone from container name.
-
-    Container naming convention:
-    - bronze-rasters, bronze-vectors -> bronze
-    - silver-cogs, silver-tiles -> silver
-    - silverext-* -> silverext
-    - gold-* -> gold
-    """
-    container_lower = container_name.lower()
-
-    if container_lower.startswith("bronze"):
-        return "bronze"
-    elif container_lower.startswith("silverext"):
-        return "silverext"
-    elif container_lower.startswith("silver"):
-        return "silver"
-    elif container_lower.startswith("gold"):
-        return "gold"
-    else:
-        # Default - use generic repository
-        return ""

@@ -428,7 +428,7 @@ def _resolve_blob_path(path: str, storage_account: Optional[str] = None) -> str:
         container, blob_name = path.split("/", 1)
         try:
             from infrastructure.storage import BlobRepository
-            repo = BlobRepository(account_name=storage_account) if storage_account else BlobRepository()
+            repo = BlobRepository(account_name=storage_account) if storage_account else BlobRepository.for_zone("bronze")
             sas_url = repo.get_blob_sas_url(container=container, blob_path=blob_name, hours=1)
             logger.info(f"Resolved blob reference to SAS URL: {container}/{blob_name}")
             return sas_url

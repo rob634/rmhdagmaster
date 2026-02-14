@@ -86,15 +86,12 @@ class ServiceBusConfig:
     def from_env(cls) -> "ServiceBusConfig":
         """Load configuration from environment variables."""
         return cls(
-            fully_qualified_namespace=os.environ.get(
-                "SERVICE_BUS_NAMESPACE",
-                os.environ.get("SERVICE_BUS_FQDN", "")
-            ),
-            connection_string=os.environ.get("SERVICE_BUS_CONNECTION_STRING"),
-            managed_identity_client_id=os.environ.get("MANAGED_IDENTITY_CLIENT_ID"),
-            max_batch_size=int(os.environ.get("SERVICE_BUS_MAX_BATCH_SIZE", "100")),
-            retry_count=int(os.environ.get("SERVICE_BUS_RETRY_COUNT", "3")),
-            retry_delay_seconds=float(os.environ.get("SERVICE_BUS_RETRY_DELAY", "1.0")),
+            fully_qualified_namespace=os.environ.get("DAG_SERVICEBUS_FQDN", ""),
+            connection_string=os.environ.get("DAG_SERVICEBUS_CONNECTION_STRING"),
+            managed_identity_client_id=os.environ.get("AZURE_CLIENT_ID"),
+            max_batch_size=int(os.environ.get("DAG_SERVICEBUS_MAX_BATCH", "100")),
+            retry_count=int(os.environ.get("DAG_SERVICEBUS_RETRY_COUNT", "3")),
+            retry_delay_seconds=float(os.environ.get("DAG_SERVICEBUS_RETRY_DELAY_SEC", "1.0")),
         )
 
     @property
@@ -182,7 +179,7 @@ class ServiceBusPublisher:
         else:
             if not self.config.fully_qualified_namespace:
                 raise ValueError(
-                    "SERVICE_BUS_NAMESPACE environment variable not set. "
+                    "DAG_SERVICEBUS_FQDN environment variable not set. "
                     "Required for managed identity authentication."
                 )
 

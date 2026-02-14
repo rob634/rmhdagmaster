@@ -92,20 +92,20 @@ class PostgreSQLRepository:
         2. System-assigned managed identity
         3. Password authentication
         """
-        host = os.environ.get("POSTGRES_HOST") or os.environ.get("POSTGIS_HOST")
-        port = os.environ.get("POSTGRES_PORT") or os.environ.get("POSTGIS_PORT", "5432")
-        database = os.environ.get("POSTGRES_DB") or os.environ.get("POSTGIS_DATABASE")
+        host = os.environ.get("DAG_DB_HOST")
+        port = os.environ.get("DAG_DB_PORT", "5432")
+        database = os.environ.get("DAG_DB_NAME")
 
         if not host or not database:
             raise ValueError(
                 "Database connection not configured. "
-                "Set POSTGRES_HOST and POSTGRES_DB environment variables."
+                "Set DAG_DB_HOST and DAG_DB_NAME environment variables."
             )
 
         # Check for managed identity
         use_managed_identity = os.environ.get("USE_MANAGED_IDENTITY", "").lower() == "true"
-        client_id = os.environ.get("DB_ADMIN_MANAGED_IDENTITY_CLIENT_ID")
-        identity_name = os.environ.get("DB_ADMIN_MANAGED_IDENTITY_NAME")
+        client_id = os.environ.get("DAG_DB_IDENTITY_CLIENT_ID")
+        identity_name = os.environ.get("DAG_DB_IDENTITY_NAME")
 
         # Check for Azure environment (system-assigned identity)
         is_azure = bool(os.environ.get("WEBSITE_SITE_NAME"))
@@ -192,13 +192,13 @@ class PostgreSQLRepository:
         database: str,
     ) -> str:
         """Build password-based connection string (development)."""
-        user = os.environ.get("POSTGRES_USER") or os.environ.get("POSTGIS_USER", "postgres")
-        password = os.environ.get("POSTGRES_PASSWORD") or os.environ.get("POSTGIS_PASSWORD", "")
+        user = os.environ.get("DAG_DB_USER", "postgres")
+        password = os.environ.get("DAG_DB_PASSWORD", "")
 
         if not password:
             raise ValueError(
                 "No authentication configured. "
-                "Set USE_MANAGED_IDENTITY=true or provide POSTGRES_PASSWORD."
+                "Set USE_MANAGED_IDENTITY=true or provide DAG_DB_PASSWORD."
             )
 
         conn_str = (

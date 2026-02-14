@@ -96,7 +96,7 @@ async def create_cog(ctx: HandlerContext) -> HandlerResult:
     raster_type = validation["raster_type"]["type"]
 
     # Determine output path
-    mount_base = os.environ.get("ETL_MOUNT_PATH", "/mnt/etl")
+    mount_base = os.environ.get("DAG_WORKER_ETL_MOUNT_PATH", "/mnt/etl")
     source_basename = os.path.basename(local_path)
     cog_filename = _generate_cog_filename(source_basename)
     cog_local_path = os.path.join(mount_base, "output", cog_filename)
@@ -187,7 +187,7 @@ async def create_cog(ctx: HandlerContext) -> HandlerResult:
     # =========================================================================
     # Upload to blob storage (silver zone)
     # =========================================================================
-    cog_container = os.environ.get("SILVER_COGS_CONTAINER", "silver-cogs")
+    cog_container = os.environ.get("DAG_STORAGE_SILVER_COGS_CONTAINER", "silver-cogs")
     cog_blob = os.path.join(output_folder, cog_filename) if output_folder else cog_filename
 
     logger.info(f"[Node D+E] Uploading COG to {cog_container}/{cog_blob}")

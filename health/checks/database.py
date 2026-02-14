@@ -40,13 +40,13 @@ class PostgresCheck(HealthCheckPlugin):
     timeout_seconds = 5.0
 
     async def check(self) -> HealthCheckResult:
-        host = os.environ.get("POSTGRES_HOST")
-        database = os.environ.get("POSTGRES_DB")
+        host = os.environ.get("DAG_DB_HOST")
+        database = os.environ.get("DAG_DB_NAME")
 
         if not host or not database:
             return HealthCheckResult.unhealthy(
                 message="PostgreSQL not configured",
-                hint="Set POSTGRES_HOST and POSTGRES_DB",
+                hint="Set DAG_DB_HOST and DAG_DB_NAME",
             )
 
         try:

@@ -27,7 +27,7 @@ SAFETY MODEL:
 -------------
 - deploy: Uses CREATE IF NOT EXISTS for tables and enums. Safe to run repeatedly.
 - migrate: Uses ADD COLUMN IF NOT EXISTS. Only adds, never drops.
-- rebuild: Requires ALLOW_DESTRUCTIVE_BOOTSTRAP=true AND ?confirm=DESTROY.
+- rebuild: Requires DAG_ENABLE_DESTRUCTIVE_BOOTSTRAP=true AND ?confirm=DESTROY.
            DELETES ALL DATA. Development only. Remove before UAT/Prod.
 
 All operations use:
@@ -413,7 +413,7 @@ async def rebuild_schema(
     2. Recreates all tables, enums, indexes from Pydantic models
 
     Safety requirements:
-    - Environment variable ALLOW_DESTRUCTIVE_BOOTSTRAP must be 'true'
+    - Environment variable DAG_ENABLE_DESTRUCTIVE_BOOTSTRAP must be 'true'
     - Query parameter confirm must be 'DESTROY'
 
     For production deployments, use:
@@ -425,12 +425,12 @@ async def rebuild_schema(
     import os
 
     # Safety check 1: Environment variable
-    if os.environ.get("ALLOW_DESTRUCTIVE_BOOTSTRAP", "").lower() != "true":
+    if os.environ.get("DAG_ENABLE_DESTRUCTIVE_BOOTSTRAP", "").lower() != "true":
         return JSONResponse(
             status_code=403,
             content={
                 "error": "Destructive bootstrap disabled",
-                "message": "Set ALLOW_DESTRUCTIVE_BOOTSTRAP=true to enable",
+                "message": "Set DAG_ENABLE_DESTRUCTIVE_BOOTSTRAP=true to enable",
                 "hint": "This endpoint is for development only"
             }
         )

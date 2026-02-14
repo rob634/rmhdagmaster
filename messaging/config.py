@@ -77,10 +77,10 @@ class MessagingConfig:
         use_mi = os.environ.get("USE_MANAGED_IDENTITY", "").lower() == "true"
 
         if use_mi:
-            fqdn = os.environ.get("SERVICE_BUS_FQDN")
+            fqdn = os.environ.get("DAG_SERVICEBUS_FQDN")
             if not fqdn:
                 raise ValueError(
-                    "SERVICE_BUS_FQDN required when USE_MANAGED_IDENTITY=true"
+                    "DAG_SERVICEBUS_FQDN required when USE_MANAGED_IDENTITY=true"
                 )
             return cls(
                 use_managed_identity=True,
@@ -91,10 +91,10 @@ class MessagingConfig:
                 callback_base_url=os.environ.get("DAG_CALLBACK_URL"),
             )
         else:
-            connection_string = os.environ.get("SERVICEBUS_CONNECTION_STRING")
+            connection_string = os.environ.get("DAG_SERVICEBUS_CONNECTION_STRING")
             if not connection_string:
                 raise ValueError(
-                    "SERVICEBUS_CONNECTION_STRING required (or set USE_MANAGED_IDENTITY=true)"
+                    "DAG_SERVICEBUS_CONNECTION_STRING required (or set USE_MANAGED_IDENTITY=true)"
                 )
             return cls(
                 connection_string=connection_string,

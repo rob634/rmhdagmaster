@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 
 # Worker URL from environment
 WORKER_HEALTH_URL = os.environ.get(
-    "WORKER_HEALTH_URL",
+    "DAG_BRAIN_WORKER_HEALTH_URL",
     "https://rmhdagworker-fedshwfme6drd6gq.eastus-01.azurewebsites.net/health"
 )
 
@@ -57,12 +57,12 @@ class WorkerHealthCheck(HealthCheckPlugin):
     required_for_ready = False  # Orchestrator can start without worker
 
     async def check(self) -> HealthCheckResult:
-        worker_url = os.environ.get("WORKER_HEALTH_URL", WORKER_HEALTH_URL)
-        expected_queue = os.environ.get("EXPECTED_WORKER_QUEUE") or os.environ.get("DAG_WORKER_QUEUE")
+        worker_url = WORKER_HEALTH_URL
+        expected_queue = os.environ.get("DAG_WORKER_QUEUE")
         if not expected_queue:
             return HealthCheckResult.unhealthy(
-                message="EXPECTED_WORKER_QUEUE or DAG_WORKER_QUEUE not configured",
-                hint="Set EXPECTED_WORKER_QUEUE or DAG_WORKER_QUEUE environment variable",
+                message="DAG_WORKER_QUEUE not configured",
+                hint="Set DAG_WORKER_QUEUE environment variable",
             )
 
         try:

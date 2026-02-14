@@ -630,7 +630,7 @@ async def test_handler(handler_name: str, request: dict):
     Development/debugging endpoint - invoke a handler with params
     and see the result immediately.
 
-    Enable with: ENABLE_HANDLER_TESTING=true
+    Enable with: DAG_BRAIN_ENABLE_HANDLER_TESTING=true
 
     Example:
         POST /api/v1/test/handler/raster.validate
@@ -644,10 +644,10 @@ async def test_handler(handler_name: str, request: dict):
     from handlers import get_handler, HandlerContext, HandlerNotFoundError
 
     # Check if testing is enabled
-    if os.environ.get("ENABLE_HANDLER_TESTING", "").lower() != "true":
+    if os.environ.get("DAG_BRAIN_ENABLE_HANDLER_TESTING", "").lower() != "true":
         raise HTTPException(
             403,
-            "Handler testing disabled. Set ENABLE_HANDLER_TESTING=true to enable."
+            "Handler testing disabled. Set DAG_BRAIN_ENABLE_HANDLER_TESTING=true to enable."
         )
 
     # Get handler
@@ -702,7 +702,7 @@ async def list_testable_handlers():
     import os
     from handlers import list_handlers
 
-    testing_enabled = os.environ.get("ENABLE_HANDLER_TESTING", "").lower() == "true"
+    testing_enabled = os.environ.get("DAG_BRAIN_ENABLE_HANDLER_TESTING", "").lower() == "true"
 
     handlers = list_handlers()
 
@@ -716,5 +716,5 @@ async def list_testable_handlers():
             }
             for h in handlers
         ],
-        "hint": "POST /api/v1/test/handler/{name} with {\"params\": {...}}" if testing_enabled else "Set ENABLE_HANDLER_TESTING=true to enable",
+        "hint": "POST /api/v1/test/handler/{name} with {\"params\": {...}}" if testing_enabled else "Set DAG_BRAIN_ENABLE_HANDLER_TESTING=true to enable",
     }

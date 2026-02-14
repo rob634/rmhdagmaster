@@ -64,24 +64,24 @@ def get_connection_string() -> str:
         except Exception as e:
             logger.error(f"Managed identity auth failed: {e}, falling back to password auth")
 
-    # Check for DATABASE_URL
-    if url := os.environ.get("DATABASE_URL"):
+    # Check for DAG_DB_URL
+    if url := os.environ.get("DAG_DB_URL"):
         return url
 
     # Build from individual components
-    host = os.environ.get("POSTGRES_HOST", "localhost")
-    port = os.environ.get("POSTGRES_PORT", "5432")
-    name = os.environ.get("POSTGRES_DB", "postgres")
-    user = os.environ.get("POSTGRES_USER", "postgres")
-    password = os.environ.get("POSTGRES_PASSWORD", "")
-    sslmode = os.environ.get("POSTGRES_SSLMODE", "require")
+    host = os.environ.get("DAG_DB_HOST", "localhost")
+    port = os.environ.get("DAG_DB_PORT", "5432")
+    name = os.environ.get("DAG_DB_NAME", "postgres")
+    user = os.environ.get("DAG_DB_USER", "postgres")
+    password = os.environ.get("DAG_DB_PASSWORD", "")
+    sslmode = os.environ.get("DAG_DB_SSLMODE", "require")
 
     return f"postgresql://{user}:{password}@{host}:{port}/{name}?sslmode={sslmode}"
 
 
 async def init_pool(
-    min_size: int = int(os.environ.get("DB_POOL_MIN", "2")),
-    max_size: int = int(os.environ.get("DB_POOL_MAX", "10")),
+    min_size: int = int(os.environ.get("DAG_DB_POOL_MIN", "2")),
+    max_size: int = int(os.environ.get("DAG_DB_POOL_MAX", "10")),
     connection_string: Optional[str] = None,
 ) -> AsyncConnectionPool:
     """

@@ -67,10 +67,10 @@ class Orchestrator:
     """
 
     # Configuration (can be overridden via environment)
-    HEARTBEAT_INTERVAL_SEC = int(os.environ.get("HEARTBEAT_INTERVAL_SEC", "30"))
-    ORPHAN_SCAN_INTERVAL_SEC = int(os.environ.get("ORPHAN_SCAN_INTERVAL_SEC", "60"))
-    ORPHAN_THRESHOLD_SEC = int(os.environ.get("ORPHAN_THRESHOLD_SEC", "120"))
-    DEFAULT_TASK_TIMEOUT_SEC = int(os.environ.get("DEFAULT_TASK_TIMEOUT_SEC", "3600"))
+    HEARTBEAT_INTERVAL_SEC = int(os.environ.get("DAG_BRAIN_HEARTBEAT_SEC", "30"))
+    ORPHAN_SCAN_INTERVAL_SEC = int(os.environ.get("DAG_BRAIN_ORPHAN_SCAN_SEC", "60"))
+    ORPHAN_THRESHOLD_SEC = int(os.environ.get("DAG_BRAIN_ORPHAN_THRESHOLD_SEC", "120"))
+    DEFAULT_TASK_TIMEOUT_SEC = int(os.environ.get("DAG_BRAIN_DEFAULT_TIMEOUT_SEC", "3600"))
 
     def __init__(
         self,
@@ -147,7 +147,7 @@ class Orchestrator:
         return self._owner_id
 
     # Brain guard retry interval (how often standby tries to become leader)
-    STANDBY_RETRY_SEC = int(os.environ.get("BRAIN_STANDBY_RETRY_SEC", "10"))
+    STANDBY_RETRY_SEC = int(os.environ.get("DAG_BRAIN_STANDBY_RETRY_SEC", "10"))
 
     async def start(self) -> None:
         """
@@ -536,7 +536,7 @@ class Orchestrator:
     # =========================================================================
 
     # How often to verify the brain lock is still held (every N cycles)
-    BRAIN_LOCK_CHECK_INTERVAL = int(os.environ.get("BRAIN_LOCK_CHECK_CYCLES", "30"))
+    BRAIN_LOCK_CHECK_INTERVAL = int(os.environ.get("DAG_BRAIN_LOCK_CHECK_CYCLES", "30"))
 
     async def _main_loop(self) -> None:
         """

@@ -56,23 +56,19 @@ class FunctionConfig:
     def from_env(cls) -> "FunctionConfig":
         """Load configuration from environment variables."""
         return cls(
-            # Database (aligned with orchestrator env vars)
-            database_url=os.environ.get("DATABASE_URL"),
-            postgres_host=os.environ.get("POSTGRES_HOST", "localhost"),
-            postgres_port=os.environ.get("POSTGRES_PORT", "5432"),
-            postgres_db=os.environ.get("POSTGRES_DB", "postgres"),
-            db_schema=os.environ.get("DB_SCHEMA", "dagapp"),
-            # Service Bus (gateway_bp generic submit only)
-            service_bus_namespace=os.environ.get(
-                "SERVICE_BUS_NAMESPACE",
-                os.environ.get("SERVICE_BUS_FQDN", ""),
-            ),
-            service_bus_connection_string=os.environ.get("SERVICE_BUS_CONNECTION_STRING"),
-            job_queue_name=os.environ.get("JOB_QUEUE_NAME", ""),
-            # Orchestrator + Worker URLs
-            orchestrator_url=os.environ.get("ORCHESTRATOR_BASE_URL",
-                                            os.environ.get("ORCHESTRATOR_URL", "http://localhost:8000")),
-            worker_url=os.environ.get("WORKER_URL", "http://localhost:8001"),
+            # Database (shared DAG_ vars)
+            database_url=os.environ.get("DAG_DB_URL"),
+            postgres_host=os.environ.get("DAG_DB_HOST", "localhost"),
+            postgres_port=os.environ.get("DAG_DB_PORT", "5432"),
+            postgres_db=os.environ.get("DAG_DB_NAME", "postgres"),
+            db_schema=os.environ.get("DAG_DB_SCHEMA", "dagapp"),
+            # Service Bus (shared DAG_ vars)
+            service_bus_namespace=os.environ.get("DAG_SERVICEBUS_FQDN", ""),
+            service_bus_connection_string=os.environ.get("DAG_SERVICEBUS_CONNECTION_STRING"),
+            job_queue_name=os.environ.get("DAG_JOB_QUEUE", ""),
+            # Gateway-specific URLs
+            orchestrator_url=os.environ.get("GATEWAY_ORCHESTRATOR_URL", "http://localhost:8000"),
+            worker_url=os.environ.get("GATEWAY_WORKER_URL", "http://localhost:8001"),
             # App Info
             version=os.environ.get("APP_VERSION", "0.9.0"),
             service_name=os.environ.get("SERVICE_NAME", "rmhdagmaster-gateway"),
@@ -97,8 +93,8 @@ class FunctionConfig:
             return get_postgres_connection_string()
 
         # 3. Password auth fallback (local dev only)
-        user = os.environ.get("POSTGRES_USER", "postgres")
-        password = os.environ.get("POSTGRES_PASSWORD", "")
+        user = os.environ.get("DAG_DB_USER", "postgres")
+        password = os.environ.get("DAG_DB_PASSWORD", "")
 
         return (
             f"host={self.postgres_host} "

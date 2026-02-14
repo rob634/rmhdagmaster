@@ -67,10 +67,10 @@ def gateway_submit(req: func.HttpRequest) -> func.HttpResponse:
         )
 
     submitted_at = datetime.now(timezone.utc)
-    queue_name = os.environ.get("JOB_QUEUE_NAME")
+    queue_name = os.environ.get("DAG_JOB_QUEUE")
     if not queue_name:
         return _json_response(
-            ErrorResponse(error="Server misconfigured", details="JOB_QUEUE_NAME not set").model_dump(),
+            ErrorResponse(error="Server misconfigured", details="DAG_JOB_QUEUE not set").model_dump(),
             status_code=503,
         )
 
@@ -148,10 +148,10 @@ def gateway_submit_batch(req: func.HttpRequest) -> func.HttpResponse:
         )
 
     submitted_at = datetime.now(timezone.utc)
-    queue_name = os.environ.get("JOB_QUEUE_NAME")
+    queue_name = os.environ.get("DAG_JOB_QUEUE")
     if not queue_name:
         return _json_response(
-            ErrorResponse(error="Server misconfigured", details="JOB_QUEUE_NAME not set").model_dump(),
+            ErrorResponse(error="Server misconfigured", details="DAG_JOB_QUEUE not set").model_dump(),
             status_code=503,
         )
 

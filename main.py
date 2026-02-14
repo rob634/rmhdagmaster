@@ -46,8 +46,8 @@ from health.checks.application import set_orchestrator
 from core.logging import configure_logging, get_logger
 
 configure_logging(
-    level=os.environ.get("LOG_LEVEL", "INFO"),
-    json_output=os.environ.get("LOG_FORMAT", "").lower() == "json",
+    level=os.environ.get("DAG_LOG_LEVEL", "INFO"),
+    json_output=os.environ.get("DAG_LOG_FORMAT", "").lower() == "json",
 )
 logger = get_logger(__name__)
 
@@ -68,7 +68,7 @@ async def lifespan(app: FastAPI):
     logger.info(f"Starting DAG Orchestrator v{__version__} (Epoch {EPOCH}, Build {BUILD_DATE})")
 
     # Optional: Bootstrap schema on startup (for development)
-    if os.environ.get("AUTO_BOOTSTRAP_SCHEMA", "").lower() == "true":
+    if os.environ.get("DAG_ENABLE_AUTO_BOOTSTRAP", "").lower() == "true":
         logger.info("Auto-bootstrap enabled, deploying schema...")
         try:
             from infrastructure import DatabaseInitializer
@@ -86,7 +86,7 @@ async def lifespan(app: FastAPI):
     logger.info("Database pool initialized")
 
     # Initialize workflow service
-    workflows_dir = os.environ.get("WORKFLOWS_DIR", "./workflows")
+    workflows_dir = os.environ.get("DAG_WORKFLOWS_DIR", "./workflows")
     _workflow_service = WorkflowService(workflows_dir)
     count = _workflow_service.load_all()
     logger.info(f"Loaded {count} workflows")
@@ -110,7 +110,7 @@ async def lifespan(app: FastAPI):
     logger.info("Metadata service initialized")
 
     # Initialize orchestrator (with asset_service for processing callbacks)
-    poll_interval = float(os.environ.get("ORCHESTRATOR_POLL_INTERVAL", "1.0"))
+    poll_interval = float(os.environ.get("DAG_BRAIN_POLL_INTERVAL_SEC", "1.0"))
     _orchestrator = Orchestrator(pool, _workflow_service, poll_interval, event_service, asset_service)
 
     # Set services for API routes

@@ -41,14 +41,12 @@ class BlobStorageCheck(HealthCheckPlugin):
 
     async def check(self) -> HealthCheckResult:
         # Check if storage is configured
-        storage_account = os.environ.get("BRONZE_STORAGE_ACCOUNT")
-        if not storage_account:
-            storage_account = os.environ.get("AZURE_STORAGE_ACCOUNT")
+        storage_account = os.environ.get("DAG_STORAGE_BRONZE_ACCOUNT")
 
         if not storage_account:
             return HealthCheckResult.degraded(
                 message="No storage account configured",
-                hint="Set BRONZE_STORAGE_ACCOUNT or AZURE_STORAGE_ACCOUNT",
+                hint="Set DAG_STORAGE_BRONZE_ACCOUNT environment variable",
             )
 
         try:

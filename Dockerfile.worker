@@ -70,7 +70,7 @@ RUN chmod +x entrypoint.sh
 USER worker
 
 # Environment defaults
-ENV RUN_MODE=worker
+ENV DAG_RUN_MODE=worker
 ENV PORT=8000
 ENV PYTHONPATH=/home/worker/app
 ENV PYTHONUNBUFFERED=1

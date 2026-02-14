@@ -31,6 +31,7 @@ from datetime import datetime, timezone
 from handlers.registry import register_handler, HandlerContext, HandlerResult
 from infrastructure.pgstac import PgStacRepository
 from infrastructure.pgstac_search import PgStacSearchRegistration
+from infrastructure.storage import BlobRepository
 
 logger = logging.getLogger(__name__)
 
@@ -93,7 +94,7 @@ async def stac_ensure_collection(ctx: HandlerContext) -> HandlerResult:
                 "bbox": [bounds],
             },
             "temporal": {
-                "interval": [[datetime.utcnow().isoformat() + "Z", None]],
+                "interval": [[datetime.now(timezone.utc).isoformat(), None]],
             },
         },
         "links": [],
@@ -128,7 +129,7 @@ async def stac_ensure_collection(ctx: HandlerContext) -> HandlerResult:
     created = not existing
     updated = existing
 
-    pgstac_base = os.environ.get("PGSTAC_URL", "https://pgstac.example.com")
+    pgstac_base = os.environ.get("DAG_PGSTAC_URL", "https://pgstac.example.com")
     collection_url = f"{pgstac_base}/collections/{collection_id}"
 
     logger.info(f"[Node F.1] Collection {'created' if created else 'updated'}: {collection_id}")
@@ -431,8 +432,8 @@ def _build_stac_item(
     access_level: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Build a STAC item for a single COG."""
-    storage_account = os.environ.get("AZURE_STORAGE_ACCOUNT", "rmhgeostorage")
-    cog_url = f"https://{storage_account}.blob.core.windows.net/{cog_container}/{cog_blob}"
+    silver_account = BlobRepository.for_zone("silver").account_name
+    cog_url = f"https://{silver_account}.blob.core.windows.net/{cog_container}/{cog_blob}"
 
     item = {
         "type": "Feature",
@@ -445,7 +446,7 @@ def _build_stac_item(
         "geometry": _bounds_to_geometry(bounds),
         "bbox": bounds,
         "properties": {
-            "datetime": datetime.utcnow().isoformat() + "Z",
+            "datetime": datetime.now(timezone.utc).isoformat(),
             "title": title or item_id,
             "tags": tags or [],
             "proj:epsg": _extract_epsg(source_crs),
@@ -492,8 +493,8 @@ def _build_tile_stac_item(
     access_level: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Build a STAC item for a tile COG."""
-    storage_account = os.environ.get("AZURE_STORAGE_ACCOUNT", "rmhgeostorage")
-    cog_url = f"https://{storage_account}.blob.core.windows.net/{cog_container}/{cog_blob}"
+    silver_account = BlobRepository.for_zone("silver").account_name
+    cog_url = f"https://{silver_account}.blob.core.windows.net/{cog_container}/{cog_blob}"
 
     item = {
         "type": "Feature",
@@ -503,7 +504,7 @@ def _build_tile_stac_item(
         "geometry": _bounds_to_geometry(geo_bounds),
         "bbox": geo_bounds,
         "properties": {
-            "datetime": datetime.utcnow().isoformat() + "Z",
+            "datetime": datetime.now(timezone.utc).isoformat(),
             "tile:row": row,
             "tile:col": col,
             "tags": tags or [],
@@ -540,11 +541,11 @@ def _generate_viewer_urls(
     """Generate TiTiler and pgSTAC viewer URLs."""
     import urllib.parse
 
-    storage_account = os.environ.get("AZURE_STORAGE_ACCOUNT", "rmhgeostorage")
-    titiler_base = os.environ.get("TITILER_URL", "https://titiler.example.com")
-    pgstac_base = os.environ.get("PGSTAC_URL", "https://pgstac.example.com")
+    silver_account = BlobRepository.for_zone("silver").account_name
+    titiler_base = os.environ.get("DAG_TITILER_URL", "https://titiler.example.com")
+    pgstac_base = os.environ.get("DAG_PGSTAC_URL", "https://pgstac.example.com")
 
-    cog_url = f"https://{storage_account}.blob.core.windows.net/{cog_container}/{cog_blob}"
+    cog_url = f"https://{silver_account}.blob.core.windows.net/{cog_container}/{cog_blob}"
     encoded_cog_url = urllib.parse.quote(cog_url, safe="")
 
     return {

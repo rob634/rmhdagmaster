@@ -65,21 +65,21 @@ class ConfigCheck(HealthCheckPlugin):
 
     # Required for any mode
     REQUIRED_VARS = [
-        "RUN_MODE",
+        "DAG_RUN_MODE",
     ]
 
     # Required for orchestrator mode
     ORCHESTRATOR_VARS = [
-        "POSTGRES_HOST",
-        "POSTGRES_DB",
-        "JOB_QUEUE_NAME",
+        "DAG_DB_HOST",
+        "DAG_DB_NAME",
+        "DAG_JOB_QUEUE",
         "DAG_WORKER_QUEUE",
     ]
 
     # Required for worker mode
     WORKER_VARS = [
-        "WORKER_TYPE",
-        "WORKER_QUEUE",
+        "DAG_WORKER_TYPE",
+        "DAG_WORKER_QUEUE",
     ]
 
     async def check(self) -> HealthCheckResult:
@@ -94,7 +94,7 @@ class ConfigCheck(HealthCheckPlugin):
                 missing.append(var)
 
         # Check mode-specific vars
-        run_mode = os.environ.get("RUN_MODE", "orchestrator")
+        run_mode = os.environ.get("DAG_RUN_MODE", "orchestrator")
 
         if run_mode == "orchestrator":
             for var in self.ORCHESTRATOR_VARS:

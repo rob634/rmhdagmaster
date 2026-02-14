@@ -75,9 +75,9 @@ USER orchestrator
 # Environment defaults
 ENV HOST=0.0.0.0
 ENV PORT=8000
-ENV RUN_MODE=orchestrator
-ENV ORCHESTRATOR_POLL_INTERVAL=1.0
-ENV WORKFLOWS_DIR=/app/workflows
+ENV DAG_RUN_MODE=orchestrator
+ENV DAG_BRAIN_POLL_INTERVAL_SEC=1.0
+ENV DAG_WORKFLOWS_DIR=/app/workflows
 
 # Expose port (only used in orchestrator mode)
 EXPOSE 8000

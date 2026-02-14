@@ -65,10 +65,11 @@ class BlobRepository:
 
     def __new__(cls, account_name: Optional[str] = None, **kwargs):
         """Multi-instance singleton: one instance per storage account."""
-        account_name = account_name or os.environ.get(
-            "AZURE_STORAGE_ACCOUNT",
-            os.environ.get("AZURE_STORAGE_ACCOUNT_NAME", "rmhgeostorage"),
-        )
+        if not account_name:
+            raise ValueError(
+                "BlobRepository requires an explicit account_name. "
+                "Use BlobRepository.for_zone('bronze') or BlobRepository.for_zone('silver') instead."
+            )
 
         with cls._instances_lock:
             if account_name not in cls._instances:
@@ -82,9 +83,7 @@ class BlobRepository:
         if getattr(self, "_initialized", False):
             return
 
-        self.account_name = account_name or os.environ.get(
-            "AZURE_STORAGE_ACCOUNT", "rmhgeostorage"
-        )
+        self.account_name = account_name
 
         # Container client cache with thread-safe access
         self._container_clients: Dict[str, Any] = {}
@@ -192,21 +191,22 @@ class BlobRepository:
             BlobRepository configured for that zone's storage account
         """
         zone_env_map = {
-            "bronze": "BRONZE_STORAGE_ACCOUNT",
-            "silver": "SILVER_STORAGE_ACCOUNT",
-            "silverext": "SILVEREXT_STORAGE_ACCOUNT",
-            "gold": "GOLD_STORAGE_ACCOUNT",
+            "bronze": "DAG_STORAGE_BRONZE_ACCOUNT",
+            "silver": "DAG_STORAGE_SILVER_ACCOUNT",
+            "silverext": "DAG_STORAGE_SILVEREXT_ACCOUNT",
+            "gold": "DAG_STORAGE_GOLD_ACCOUNT",
         }
 
         env_var = zone_env_map.get(zone.lower())
         if not env_var:
             raise ValueError(f"Unknown zone: {zone}. Valid: {list(zone_env_map.keys())}")
 
-        # Fall back to default account if zone-specific not set
-        account_name = os.environ.get(
-            env_var,
-            os.environ.get("AZURE_STORAGE_ACCOUNT", "rmhgeostorage")
-        )
+        account_name = os.environ.get(env_var)
+        if not account_name:
+            raise ValueError(
+                f"Storage zone '{zone}' not configured. "
+                f"Set environment variable {env_var} to the storage account name."
+            )
 
         return cls(account_name=account_name)
 
@@ -602,19 +602,17 @@ class BlobRepository:
 # CONVENIENCE FUNCTIONS
 # ============================================================================
 
-def get_blob_repository(zone: Optional[str] = None) -> BlobRepository:
+def get_blob_repository(zone: str) -> BlobRepository:
     """
-    Get BlobRepository instance.
+    Get BlobRepository instance for a storage zone.
 
     Args:
-        zone: Optional zone name (bronze, silver, silverext, gold)
+        zone: Zone name (bronze, silver, silverext, gold) — required
 
     Returns:
         BlobRepository instance
     """
-    if zone:
-        return BlobRepository.for_zone(zone)
-    return BlobRepository()
+    return BlobRepository.for_zone(zone)
 
 
 # ============================================================================

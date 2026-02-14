@@ -83,7 +83,7 @@ class PreflightValidator(ABC):
         """Lazy-init BlobRepository (avoids import at module level on gateway)."""
         if self._blob_repo is None:
             from infrastructure.storage import BlobRepository
-            self._blob_repo = BlobRepository()
+            self._blob_repo = BlobRepository.for_zone("bronze")
         return self._blob_repo
 
     async def validate(

@@ -50,8 +50,8 @@ from core.logging import configure_logging, get_logger
 from __version__ import __version__, BUILD_DATE
 
 configure_logging(
-    level=os.environ.get("LOG_LEVEL", "INFO"),
-    json_output=os.environ.get("LOG_FORMAT", "").lower() == "json",
+    level=os.environ.get("DAG_LOG_LEVEL", "INFO"),
+    json_output=os.environ.get("DAG_LOG_FORMAT", "").lower() == "json",
 )
 logger = get_logger(__name__)
 

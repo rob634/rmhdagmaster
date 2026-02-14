@@ -44,6 +44,25 @@ For architecture details, see `docs/ARCHITECTURE.md`.
 
 10. **Defensive concurrency** — PostgreSQL advisory locks prevent multi-instance conflicts. Optimistic locking (version columns) detects concurrent modifications. See `docs/IMPLEMENTATION.md` Section 12.
 
+11. **Environment variable naming** — All app-owned env vars follow `APPNAME_COMPONENT_SETTING`:
+
+    | Prefix | Scope | Example |
+    |--------|-------|---------|
+    | `DAG_` | Shared across all 3 apps | `DAG_DB_HOST`, `DAG_SERVICEBUS_FQDN` |
+    | `DAG_BRAIN_` | Orchestrator only | `DAG_BRAIN_POLL_INTERVAL_SEC` |
+    | `DAG_WORKER_` | Worker only | `DAG_WORKER_TYPE`, `DAG_WORKER_QUEUE` |
+    | `GATEWAY_` | Function App gateway only | `GATEWAY_ORCHESTRATOR_URL` |
+
+    Azure platform vars (`AZURE_CLIENT_ID`, `APPLICATIONINSIGHTS_*`, `FUNCTIONS_*`, `AzureWebJobs*`, `DOCKER_REGISTRY_*`, `WEBSITE_*`) are never renamed.
+
+    **Units in names** — Always include the unit suffix: `_SEC`, `_MS`, `_MB`, `_CYCLES`. Never make someone guess whether `INTERVAL=60` means seconds or milliseconds.
+
+    **Booleans read as questions** — Use `DAG_ENABLE_*` so the value is yes/no. Not `DAG_ORPHAN_SCAN_MODE=on`.
+
+    **No hardcoded default values for external resources** (storage accounts, hostnames, URLs). If an env var is not set, fail fast with a clear error message naming the missing variable.
+
+    **No inference from resource names** — storage accounts, containers, queues are declared explicitly via env vars or config dictionaries. Never guess a zone, account, or endpoint from a naming pattern.
+
 ---
 
 ## Code Patterns
