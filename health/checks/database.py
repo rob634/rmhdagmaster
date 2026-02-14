@@ -189,6 +189,95 @@ class DagAppCheck(HealthCheckPlugin):
             )
 
 
+@register_check(category="database")
+class ConnectionPoolCheck(HealthCheckPlugin):
+    """
+    Connection pool health check.
+
+    Exposes psycopg_pool stats for observability:
+    - pool_size: Current number of connections in the pool
+    - pool_available: Connections idle and ready to use
+    - pool_min/pool_max: Configured bounds
+    - requests_waiting: Requests currently blocked waiting for a connection
+    - requests_num: Total requests served (lifetime)
+    - requests_errors: Requests that failed to get a connection (lifetime)
+    - requests_queued: Requests that had to wait (lifetime)
+    - connections_num: Total connections opened (lifetime)
+    - connections_lost: Connections lost unexpectedly (lifetime)
+    - usage_ms: Total connection usage time in ms (lifetime)
+    - requests_wait_ms: Total time spent waiting for connections in ms (lifetime)
+
+    Status logic:
+    - UNHEALTHY: Pool not initialized
+    - DEGRADED: requests_waiting > 0 or pool_available == 0
+    - HEALTHY: Connections available, nothing waiting
+    """
+
+    name = "connection_pool"
+    timeout_seconds = 2.0
+    required_for_ready = True
+
+    async def check(self) -> HealthCheckResult:
+        try:
+            from repositories.database import _pool
+
+            if _pool is None:
+                return HealthCheckResult.unhealthy(
+                    message="Connection pool not initialized",
+                )
+
+            stats = _pool.get_stats()
+
+            # Key operational metrics
+            pool_size = stats.get("pool_size", 0)
+            pool_available = stats.get("pool_available", 0)
+            pool_min = stats.get("pool_min", 0)
+            pool_max = stats.get("pool_max", 0)
+            requests_waiting = stats.get("requests_waiting", 0)
+
+            # Build details dict with all stats
+            details = {
+                "pool_size": pool_size,
+                "pool_available": pool_available,
+                "pool_min": pool_min,
+                "pool_max": pool_max,
+                "requests_waiting": requests_waiting,
+                "requests_num": stats.get("requests_num", 0),
+                "requests_queued": stats.get("requests_queued", 0),
+                "requests_errors": stats.get("requests_errors", 0),
+                "requests_wait_ms": stats.get("requests_wait_ms", 0),
+                "connections_num": stats.get("connections_num", 0),
+                "connections_lost": stats.get("connections_lost", 0),
+                "connections_errors": stats.get("connections_errors", 0),
+                "connections_ms": stats.get("connections_ms", 0),
+                "returns_bad": stats.get("returns_bad", 0),
+                "usage_ms": stats.get("usage_ms", 0),
+            }
+
+            if requests_waiting > 0:
+                return HealthCheckResult.degraded(
+                    message=f"Pool saturated: {requests_waiting} requests waiting "
+                            f"({pool_available}/{pool_size} available)",
+                    **details,
+                )
+
+            if pool_available == 0 and pool_size >= pool_max:
+                return HealthCheckResult.degraded(
+                    message=f"Pool fully utilized: 0/{pool_size} available "
+                            f"(max {pool_max})",
+                    **details,
+                )
+
+            return HealthCheckResult.healthy(
+                message=f"Pool OK: {pool_available}/{pool_size} available "
+                        f"(max {pool_max})",
+                **details,
+            )
+
+        except Exception as e:
+            return HealthCheckResult.from_exception(e)
+
+
 # ============================================================================
 # EXPORTS
 # ============================================================================
@@ -197,4 +286,5 @@ __all__ = [
     "PostgresCheck",
     "PgStacCheck",
     "DagAppCheck",
+    "ConnectionPoolCheck",
 ]

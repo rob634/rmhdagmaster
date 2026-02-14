@@ -140,6 +140,8 @@ class JobResponse(BaseModel):
     completed_at: Optional[datetime] = None
     submitted_by: Optional[str] = None
     correlation_id: Optional[str] = None
+    owner_id: Optional[str] = None
+    owner_heartbeat_at: Optional[datetime] = None
 
     model_config = {"from_attributes": True}
 

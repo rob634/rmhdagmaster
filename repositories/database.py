@@ -80,8 +80,8 @@ def get_connection_string() -> str:
 
 
 async def init_pool(
-    min_size: int = 2,
-    max_size: int = 10,
+    min_size: int = int(os.environ.get("DB_POOL_MIN", "2")),
+    max_size: int = int(os.environ.get("DB_POOL_MAX", "10")),
     connection_string: Optional[str] = None,
 ) -> AsyncConnectionPool:
     """

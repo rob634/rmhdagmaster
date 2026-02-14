@@ -71,15 +71,31 @@ class OrchestratorCheck(HealthCheckPlugin):
                 message="Orchestrator loop not running",
             )
 
-        # Get stats if available
+        # Get stats
         stats = getattr(_orchestrator, "stats", {})
+        is_leader = stats.get("is_leader", False)
+        role = stats.get("role", "unknown")
 
-        return HealthCheckResult.healthy(
-            message="Orchestrator running",
-            is_running=True,
-            jobs_processed=stats.get("jobs_processed", 0),
-            last_poll=stats.get("last_poll"),
-        )
+        details = {
+            "role": role,
+            "owner_id": stats.get("owner_id"),
+            "uptime_seconds": stats.get("uptime_seconds"),
+            "cycles": stats.get("cycles", 0),
+            "active_jobs": stats.get("active_jobs", 0),
+            "tasks_dispatched": stats.get("tasks_dispatched", 0),
+            "last_cycle_at": stats.get("last_cycle_at"),
+        }
+
+        if is_leader:
+            return HealthCheckResult.healthy(
+                message=f"Orchestrator running (leader, {stats.get('cycles', 0)} cycles)",
+                **details,
+            )
+        else:
+            return HealthCheckResult.degraded(
+                message="Orchestrator running in standby mode (not leader)",
+                **details,
+            )
 
 
 @register_check(category="application")

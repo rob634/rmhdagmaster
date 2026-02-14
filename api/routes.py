@@ -228,6 +228,8 @@ async def create_job(request: JobCreate):
             completed_at=job.completed_at,
             submitted_by=job.submitted_by,
             correlation_id=job.correlation_id,
+            owner_id=job.owner_id,
+            owner_heartbeat_at=job.owner_heartbeat_at,
         )
 
     except KeyError as e:
@@ -270,6 +272,8 @@ async def list_jobs(
                 completed_at=j.completed_at,
                 submitted_by=j.submitted_by,
                 correlation_id=j.correlation_id,
+                owner_id=j.owner_id,
+                owner_heartbeat_at=j.owner_heartbeat_at,
             )
             for j in jobs
         ],
@@ -315,6 +319,8 @@ async def get_job(job_id: str):
             completed_at=job.completed_at,
             submitted_by=job.submitted_by,
             correlation_id=job.correlation_id,
+            owner_id=job.owner_id,
+            owner_heartbeat_at=job.owner_heartbeat_at,
         ),
         nodes=[
             NodeResponse(
@@ -367,6 +373,8 @@ async def cancel_job(job_id: str):
         completed_at=job.completed_at,
         submitted_by=job.submitted_by,
         correlation_id=job.correlation_id,
+        owner_id=job.owner_id,
+        owner_heartbeat_at=job.owner_heartbeat_at,
     )
 
 

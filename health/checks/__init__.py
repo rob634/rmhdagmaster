@@ -23,6 +23,7 @@ Database Checks (priority 30):
 - postgres: PostgreSQL connection
 - pgstac: pgSTAC schema available
 - dagapp: DAG app schema available
+- connection_pool: Async connection pool stats and saturation
 
 Application Checks (priority 40):
 - orchestrator: Orchestrator loop running
@@ -39,7 +40,7 @@ Import this module to register all checks:
 # Import all check modules to trigger registration
 from health.checks.startup import ProcessCheck, ConfigCheck
 from health.checks.infrastructure import BlobStorageCheck, ServiceBusCheck
-from health.checks.database import PostgresCheck, PgStacCheck, DagAppCheck
+from health.checks.database import PostgresCheck, PgStacCheck, DagAppCheck, ConnectionPoolCheck
 from health.checks.application import OrchestratorCheck, WorkflowsCheck, HandlersCheck
 from health.checks.worker import WorkerHealthCheck
 
@@ -54,6 +55,7 @@ __all__ = [
     "PostgresCheck",
     "PgStacCheck",
     "DagAppCheck",
+    "ConnectionPoolCheck",
     # Application
     "OrchestratorCheck",
     "WorkflowsCheck",

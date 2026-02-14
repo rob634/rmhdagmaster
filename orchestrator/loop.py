@@ -112,6 +112,13 @@ class Orchestrator:
         self._running = False
         self._stop_event = asyncio.Event()
 
+        # Brain guard — session-level advisory lock ensures single leader
+        self._is_leader = False
+        self._leader_conn = None  # Dedicated connection holding the advisory lock
+        self._standby_task: Optional[asyncio.Task] = None
+        # Fixed lock ID for brain guard (hash of "rmhdag:brain:leader")
+        self._BRAIN_LOCK_ID = 5528965954220049258  # Pre-computed stable hash
+
         # Background tasks
         self._main_loop_task: Optional[asyncio.Task] = None
         self._queue_consumer_task: Optional[asyncio.Task] = None
@@ -139,22 +146,97 @@ class Orchestrator:
         """This orchestrator's unique ID."""
         return self._owner_id
 
+    # Brain guard retry interval (how often standby tries to become leader)
+    STANDBY_RETRY_SEC = int(os.environ.get("BRAIN_STANDBY_RETRY_SEC", "10"))
+
     async def start(self) -> None:
         """
-        Start the orchestrator.
+        Start the orchestrator with brain guard.
 
-        Unlike single-orchestrator mode, NO lease is acquired.
-        Multiple instances can start and run simultaneously.
-        Each instance processes only jobs it owns.
+        Uses a PostgreSQL session-level advisory lock to ensure only one
+        instance runs the orchestration loop at a time. If the lock is
+        already held, this instance enters standby mode and retries
+        periodically. When the leader dies, its session ends, the lock
+        is released, and a standby instance promotes itself.
+
+        All instances serve HTTP regardless of leader status.
         """
         if self._running:
             logger.warning("Orchestrator already running")
             return
 
         self._running = True
-        self._started_at = datetime.utcnow()
+        self._started_at = datetime.now(timezone.utc)
         self._stop_event.clear()
 
+        # Try to become leader
+        acquired = await self._try_acquire_brain_lock()
+
+        if acquired:
+            await self._start_as_leader()
+        else:
+            # Start standby loop — retries lock acquisition periodically
+            logger.info(
+                f"Orchestrator entering standby mode "
+                f"(owner_id={self._owner_id[:8]}..., "
+                f"retry_interval={self.STANDBY_RETRY_SEC}s)"
+            )
+            self._standby_task = asyncio.create_task(
+                self._standby_loop(),
+                name=f"orchestrator-standby-{self._owner_id[:8]}"
+            )
+
+    async def _try_acquire_brain_lock(self) -> bool:
+        """
+        Try to acquire the brain guard advisory lock.
+
+        Uses a session-level advisory lock (pg_try_advisory_lock) on a
+        dedicated connection. The lock lives as long as the connection
+        is open. If the process dies, PostgreSQL closes the connection
+        and releases the lock automatically.
+
+        Returns:
+            True if this instance is now the leader.
+        """
+        try:
+            # Get a dedicated connection (NOT from the pool — we hold it open)
+            from repositories.database import get_connection_string
+            from psycopg import AsyncConnection
+            from psycopg.rows import dict_row
+
+            conn = await AsyncConnection.connect(
+                get_connection_string(),
+                autocommit=True,
+                row_factory=dict_row,
+            )
+
+            result = await conn.execute(
+                "SELECT pg_try_advisory_lock(%s) AS acquired",
+                (self._BRAIN_LOCK_ID,),
+            )
+            row = await result.fetchone()
+            acquired = row["acquired"] if row else False
+
+            if acquired:
+                # Keep the connection open — it holds the lock
+                self._leader_conn = conn
+                self._is_leader = True
+                logger.info(
+                    f"Brain guard: acquired leader lock "
+                    f"(owner_id={self._owner_id[:8]}...)"
+                )
+                return True
+            else:
+                # We didn't get the lock — close this connection
+                await conn.close()
+                return False
+
+        except Exception as e:
+            logger.error(f"Brain guard: failed to acquire lock: {e}")
+            return False
+
+    async def _start_as_leader(self) -> None:
+        """Start all orchestrator background tasks (leader mode)."""
         # Initialize publisher
         self._publisher = await get_publisher()
 
@@ -181,9 +263,117 @@ class Orchestrator:
         )
 
         logger.info(
-            f"Orchestrator started (owner_id={self._owner_id[:8]}..., "
+            f"Orchestrator started as LEADER (owner_id={self._owner_id[:8]}..., "
             f"poll={self.poll_interval}s, heartbeat={self.HEARTBEAT_INTERVAL_SEC}s, "
             f"orphan_threshold={self.ORPHAN_THRESHOLD_SEC}s)"
+        )
+
+    async def _standby_loop(self) -> None:
+        """
+        Standby loop: periodically retry brain lock acquisition.
+
+        When the leader dies, its PostgreSQL session closes and the
+        advisory lock is released. This loop detects that and promotes
+        this instance to leader.
+        """
+        while self._running and not self._stop_event.is_set():
+            try:
+                await asyncio.sleep(self.STANDBY_RETRY_SEC)
+
+                if self._stop_event.is_set():
+                    break
+
+                acquired = await self._try_acquire_brain_lock()
+                if acquired:
+                    logger.info(
+                        f"Brain guard: standby promoted to LEADER "
+                        f"(owner_id={self._owner_id[:8]}...)"
+                    )
+                    await self._start_as_leader()
+                    return  # Exit standby loop — now running as leader
+                else:
+                    logger.debug(
+                        f"Brain guard: lock still held by another instance, "
+                        f"retrying in {self.STANDBY_RETRY_SEC}s"
+                    )
+
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Brain guard standby error: {e}")
+                await asyncio.sleep(self.STANDBY_RETRY_SEC)
+
+    async def _verify_brain_lock(self) -> bool:
+        """
+        Verify the brain guard lock connection is still alive.
+
+        Sends a lightweight query on the dedicated lock connection.
+        If the connection is dead, returns False.
+        """
+        if self._leader_conn is None:
+            return False
+
+        try:
+            result = await self._leader_conn.execute("SELECT 1 AS alive")
+            row = await result.fetchone()
+            return row is not None
+        except Exception as e:
+            logger.warning(f"Brain guard: lock connection check failed: {e}")
+            return False
+
+    async def _demote_to_standby(self) -> None:
+        """
+        Demote this instance from leader to standby.
+
+        Cancels all leader background tasks, cleans up the dead lock
+        connection, and starts the standby retry loop.
+        """
+        self._is_leader = False
+
+        # Cancel leader tasks
+        leader_tasks = [
+            self._main_loop_task,
+            self._queue_consumer_task,
+            self._heartbeat_task,
+            self._orphan_scan_task,
+        ]
+        for task in leader_tasks:
+            if task and not task.done():
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+
+        self._main_loop_task = None
+        self._queue_consumer_task = None
+        self._heartbeat_task = None
+        self._orphan_scan_task = None
+
+        # Close dead lock connection
+        if self._leader_conn:
+            try:
+                await self._leader_conn.close()
+            except Exception:
+                pass
+            self._leader_conn = None
+
+        # Close job queue
+        if self._job_queue_repo:
+            try:
+                await self._job_queue_repo.close()
+            except Exception:
+                pass
+
+        logger.info(
+            f"Brain guard: demoted to standby, will retry lock in "
+            f"{self.STANDBY_RETRY_SEC}s (owner_id={self._owner_id[:8]}...)"
+        )
+
+        # Start standby loop to try re-acquiring leadership
+        self._standby_task = asyncio.create_task(
+            self._standby_loop(),
+            name=f"orchestrator-standby-{self._owner_id[:8]}"
         )
 
     async def stop(self) -> None:
@@ -191,6 +381,7 @@ class Orchestrator:
         Stop the orchestrator gracefully.
 
         Signals all background tasks to stop and waits for completion.
+        Releases the brain guard advisory lock so a standby can promote.
         Does NOT release job ownership - jobs remain owned and will be
         reclaimed by other instances after heartbeat expires.
         """
@@ -199,12 +390,13 @@ class Orchestrator:
         self._running = False
         self._stop_event.set()
 
-        # Cancel all background tasks
+        # Cancel all background tasks (leader + standby)
         tasks = [
             self._main_loop_task,
             self._queue_consumer_task,
             self._heartbeat_task,
             self._orphan_scan_task,
+            self._standby_task,
         ]
 
         for task in tasks:
@@ -219,8 +411,21 @@ class Orchestrator:
         if self._job_queue_repo:
             await self._job_queue_repo.close()
 
+        # Release brain guard lock by closing the dedicated connection
+        was_leader = self._is_leader
+        if self._leader_conn:
+            try:
+                await self._leader_conn.close()
+                logger.info("Brain guard: released leader lock")
+            except Exception as e:
+                logger.warning(f"Brain guard: error releasing lock: {e}")
+            finally:
+                self._leader_conn = None
+                self._is_leader = False
+
         logger.info(
             f"Orchestrator stopped (owner_id={self._owner_id[:8]}..., "
+            f"was_leader={was_leader}, "
             f"cycles={self._cycles}, jobs_claimed={self._jobs_claimed}, "
             f"jobs_reclaimed={self._jobs_reclaimed}, "
             f"tasks_dispatched={self._tasks_dispatched})"
@@ -330,11 +535,15 @@ class Orchestrator:
     # MAIN LOOP - Processes owned jobs
     # =========================================================================
 
+    # How often to verify the brain lock is still held (every N cycles)
+    BRAIN_LOCK_CHECK_INTERVAL = int(os.environ.get("BRAIN_LOCK_CHECK_CYCLES", "30"))
+
     async def _main_loop(self) -> None:
         """
         Main orchestration loop.
 
         Only processes jobs where owner_id = self.owner_id.
+        Periodically verifies the brain guard lock is still held.
         """
         logger.info(f"Starting main loop (owner={self._owner_id[:8]}...)")
 
@@ -343,6 +552,17 @@ class Orchestrator:
                 await self._cycle()
                 self._cycles += 1
                 self._last_cycle_at = datetime.utcnow()
+
+                # Periodic brain lock health check
+                if self._cycles % self.BRAIN_LOCK_CHECK_INTERVAL == 0:
+                    if not await self._verify_brain_lock():
+                        logger.error(
+                            "Brain guard: lost leader lock — demoting to standby "
+                            f"(owner_id={self._owner_id[:8]}...)"
+                        )
+                        await self._demote_to_standby()
+                        return  # Exit main loop
+
             except asyncio.CancelledError:
                 break
             except Exception as e:
@@ -1294,20 +1514,28 @@ class Orchestrator:
         return self._running
 
     @property
+    def is_leader(self) -> bool:
+        """Check if this instance is the active brain (holds the leader lock)."""
+        return self._is_leader
+
+    @property
     def stats(self) -> Dict[str, Any]:
         """Get orchestrator statistics."""
         uptime_seconds = None
         if self._started_at:
-            uptime_seconds = (datetime.utcnow() - self._started_at).total_seconds()
+            uptime_seconds = (datetime.now(timezone.utc) - self._started_at).total_seconds()
 
         return {
             "running": self._running,
+            "is_leader": self._is_leader,
+            "role": "leader" if self._is_leader else "standby",
             "owner_id": self._owner_id,
             "started_at": self._started_at.isoformat() if self._started_at else None,
             "uptime_seconds": uptime_seconds,
             "poll_interval": self.poll_interval,
             "heartbeat_interval": self.HEARTBEAT_INTERVAL_SEC,
             "orphan_threshold": self.ORPHAN_THRESHOLD_SEC,
+            "standby_retry_interval": self.STANDBY_RETRY_SEC,
             "cycles": self._cycles,
             "last_cycle_at": self._last_cycle_at.isoformat() if self._last_cycle_at else None,
             "active_jobs": self._active_jobs_count,
